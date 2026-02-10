@@ -5,33 +5,25 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import feedparser
 import sqlite3
+
 from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
-# ----------------------
-# Настройки
-# ----------------------
-DB_PATH = "/data/database.db"  # путь к volume на Railway
+DB_PATH = "/data/database.db"  # путь для Railway volume
+
 TOKEN = os.getenv("BOT_TOKEN")
 app = ApplicationBuilder().token(TOKEN).build()
 
-# ----------------------
-# Планировщик уведомлений
-# ----------------------
+# Проверка новых видео каждую минуту
 scheduler = BackgroundScheduler()
 scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
 scheduler.start()
 
-# ----------------------
-# Состояния и последняя отредактированная ссылка
-# ----------------------
 states = {}
-last_message = {}  # {user_id: message_id}
+last_message = {}  # ID сообщений для редактирования
 
-# ----------------------
-# Меню
-# ----------------------
+# Главное меню
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -44,7 +36,7 @@ def back_menu():
     ])
 
 # ----------------------
-# Команда /start
+# /start
 # ----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
@@ -63,10 +55,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_message[uid] = q.message.message_id
 
     if q.data == "main_menu":
-        await q.message.edit_text(
-            "Скидывай ссылку на канал в чат",
-            reply_markup=main_menu()
-        )
+        await q.message.edit_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
         states.pop(uid, None)
         return
 
@@ -75,6 +64,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
+
         text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(rows))
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
@@ -91,6 +81,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
+
         video_list = []
         for name, cid in rows:
             feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
@@ -98,40 +89,48 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entry = feed.entries[0]
             pub_time = datetime(*entry.published_parsed[:6])
             video_list.append({"channel": name, "title": entry.title, "link": entry.link, "pub": pub_time})
+
         video_list.sort(key=lambda x: x["pub"], reverse=True)
         msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
 # ----------------------
-# Обработка сообщений
+# Обработка сообщений (ссылки и удаление)
 # ----------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    # Любая ссылка на youtube
-    if text.startswith("https://www.youtube.com/"):
+    # ----------------------
+    # Добавление нового канала
+    # ----------------------
+    if text.startswith("http://") or text.startswith("https://"):
         cid = resolve_channel(text)
         if not cid:
             await update.message.reply_text("❌ Не удалось определить канал")
             return
+
         name, last = get_channel_info(cid)
         if not name:
-            await update.message.reply_text("❌ Не удалось получить информацию о канале")
+            await update.message.reply_text("❌ Не удалось получить данные канала")
             return
+
         cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last))
         cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
         conn.commit()
-        await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
-        return
 
+        await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=main_menu())
+
+    # ----------------------
     # Удаление по номеру
-    if states.get(uid) == "del_num":
+    # ----------------------
+    elif states.get(uid) == "del_num":
         rows = get_user_channels(uid)
         if not rows:
             await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             states.pop(uid, None)
             return
+
         try:
             num = int(text)
             if num < 1 or num > len(rows):
@@ -140,6 +139,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             remove_channel(uid, cid_to_delete)
             states.pop(uid, None)
 
+            # Обновлённый список
             updated_rows = get_user_channels(uid)
             if not updated_rows:
                 await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
@@ -153,6 +153,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_id = last_message.get(uid)
             if message_id:
                 await context.bot.edit_message_text(chat_id=uid, message_id=message_id, text=updated_text, reply_markup=kb)
+
         except ValueError:
             await update.message.reply_text("ты долбаеб", reply_markup=back_menu())
 
@@ -163,7 +164,4 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-# ----------------------
-# Запуск бота
-# ----------------------
 app.run_polling()
