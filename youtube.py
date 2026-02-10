@@ -1,23 +1,43 @@
 import re
-import feedparser
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
+import feedparser
 
-# Преобразование ссылки на канал в ID
-def resolve_channel(url: str):
+def resolve_channel(url: str) -> str | None:
+    """
+    Получает channel_id по ссылке на канал или @username
+    """
     if "/channel/" in url:
         return url.split("/channel/")[1].split("/")[0]
     elif "/@" in url:
-        # username -> channel ID через RSS
         username = url.split("/@")[1].split("/")[0]
-        feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?user={username}")
-        if feed.entries:
-            return feed.entries[0].yt_channelid
+        r = requests.get(f"https://www.youtube.com/@{username}")
+        match = re.search(r'channelId":"(UC[\w-]+)"', r.text)
+        if match:
+            return match.group(1)
     return None
 
-# Получение имени канала и последнего видео
-def get_channel_info(cid: str):
-    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
-    if feed.entries:
-        last_video_time = datetime(*feed.entries[0].published_parsed[:6])
-        return feed.feed.title, last_video_time
-    return "Неизвестный канал", None
+def get_channel_info(channel_id: str) -> tuple[str, str]:
+    """
+    Возвращает (название канала, последний video_id)
+    """
+    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
+    if not feed.entries:
+        return ("Неизвестный канал", "")
+    name = feed.feed.title
+    last_video_id = feed.entries[0].id.split(":")[-1]
+    return name, last_video_id
+
+def get_latest_video(channel_id: str) -> tuple[str, str, datetime] | None:
+    """
+    Возвращает (video_id, title, publish_datetime) последнего видео
+    """
+    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
+    if not feed.entries:
+        return None
+    entry = feed.entries[0]
+    video_id = entry.id.split(":")[-1]
+    title = entry.title
+    pub = datetime(*entry.published_parsed[:6])
+    return video_id, title, pub
