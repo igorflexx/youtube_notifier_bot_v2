@@ -1,12 +1,8 @@
-# scheduler.py
 import feedparser
 from db import cursor, conn
 from datetime import datetime
 
-CHECK_INTERVAL = 60  # 1 минута
-
 def check_updates(bot):
-    """Проверка новых видео для всех каналов"""
     cursor.execute("SELECT channel_id, last_video_id FROM channels")
     channels = cursor.fetchall()
 
@@ -25,13 +21,10 @@ def check_updates(bot):
             cursor.execute("SELECT user_id FROM subscriptions WHERE channel_id=?", (channel_id,))
             users = cursor.fetchall()
 
+            pub_time = datetime(*entry.published_parsed[:6]).strftime("%d %B %H:%M")
+
             for (uid,) in users:
-                pub_time = datetime(*entry.published_parsed[:6])
                 bot.send_message(
                     uid,
-                    f"🎬 Новое видео!\n\n"
-                    f"📺 Канал: {entry.author}\n"
-                    f"🎬 Название: {entry.title}\n"
-                    f"🗓 Дата: {pub_time.strftime('%d %B %H:%M')}\n"
-                    f"🔗 Ссылка: {entry.link}"
+                    f"🎬 Новое видео!\n\n📺 Канал: {entry.author}\n🎥 {entry.title}\n🗓 {pub_time}\n🔗 {entry.link}"
                 )
