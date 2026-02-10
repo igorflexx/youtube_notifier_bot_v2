@@ -44,7 +44,7 @@ def get_user_channels(user_id):
         JOIN subscriptions s ON c.channel_id=s.channel_id
         WHERE s.user_id=?
     """, (user_id,))
-    return cursor.fetchall()  # [(name, channel_id), ...]
+    return cursor.fetchall()
 
 def remove_channel(user_id, channel_id):
     cursor.execute(
@@ -64,6 +64,7 @@ scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
 scheduler.start()
 
 states = {}
+last_message = {}  # {user_id: message_id} для редактирования меню
 
 # Главное меню
 def main_menu():
@@ -81,10 +82,11 @@ def back_menu():
 # Команды
 # ----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
         reply_markup=main_menu()
     )
+    last_message[update.message.from_user.id] = msg.message_id
 
 # ----------------------
 # Обработка кнопок
@@ -93,9 +95,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
+    message_id = q.message.message_id
+    last_message[uid] = message_id  # Сохраняем для редактирования
 
     if q.data == "main_menu":
-        # Вернуться в главное меню
         await q.message.edit_text(
             "Скидывай ссылку на канал в чат",
             reply_markup=main_menu()
@@ -103,69 +106,51 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         states.pop(uid, None)
         return
 
-    # Показ списка каналов
-    if q.data == "list":
+    elif q.data == "list":
         rows = get_user_channels(uid)
         if not rows:
-            await q.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
+            await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
 
-        text = "📺 Твои каналы:\n\n"
-        for i, (name, cid) in enumerate(rows, 1):
-            text += f"{i}. {name}\n"
-
+        text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(rows))
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
         ])
-        await q.message.reply_text(text, reply_markup=kb)
+        await q.message.edit_text(text, reply_markup=kb)
 
-    # Начало удаления по номеру
     elif q.data == "del_num":
         states[uid] = "del_num"
         await q.message.reply_text("Введи номер канала, который хочешь удалить", reply_markup=back_menu())
 
-    # Последние видео всех каналов
     elif q.data == "last_video":
         rows = get_user_channels(uid)
         if not rows:
-            await q.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
+            await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
 
         video_list = []
-
         for name, cid in rows:
             feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
-            if not feed.entries:
-                continue
+            if not feed.entries: continue
             entry = feed.entries[0]
             pub_time = datetime(*entry.published_parsed[:6])
-            video_list.append({
-                "channel": name,
-                "title": entry.title,
-                "link": entry.link,
-                "pub": pub_time
-            })
+            video_list.append({"channel": name, "title": entry.title, "link": entry.link, "pub": pub_time})
 
-        # Сортировка по дате, новые видео сверху
         video_list.sort(key=lambda x: x["pub"], reverse=True)
+        msg = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
 
-        msg = ""
-        for v in video_list:
-            date_str = v["pub"].strftime("%d %B %H:%M")  # 10 января 20:00
-            msg += f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {date_str}\n🔗 {v['link']}\n\n"
-
-        await q.message.reply_text(msg.strip(), reply_markup=back_menu())
+        await q.message.edit_text(msg, reply_markup=back_menu())
 
 # ----------------------
-# Обработка сообщений (ссылки или номера для удаления)
+# Обработка сообщений
 # ----------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    # Добавление нового канала
-    if text.startswith("https://") or text.startswith("http://"):
+    # Добавление нового канала по ссылке
+    if text.startswith("http://") or text.startswith("https://"):
         cid = resolve_channel(text)
         if not cid:
             await update.message.reply_text("❌ Не удалось определить канал")
@@ -199,27 +184,27 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             remove_channel(uid, cid_to_delete)
             states.pop(uid, None)
 
-            # Обновлённый список после удаления
+            # Обновлённый список каналов
             updated_rows = get_user_channels(uid)
             if not updated_rows:
                 await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
                 return
 
-            updated_text = "📺 Твои каналы:\n\n"
-            for i, (name, cid) in enumerate(updated_rows, 1):
-                updated_text += f"{i}. {name}\n"
-
+            updated_text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows))
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
             ])
-            await update.message.reply_text(updated_text, reply_markup=kb)
+            # Редактируем старое сообщение списка
+            message_id = last_message.get(uid)
+            if message_id:
+                await context.bot.edit_message_text(chat_id=uid, message_id=message_id, text=updated_text, reply_markup=kb)
 
         except ValueError:
             await update.message.reply_text("ты долбаеб", reply_markup=back_menu())
 
 # ----------------------
-# Добавляем обработчики
+# Обработчики
 # ----------------------
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
