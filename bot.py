@@ -18,32 +18,30 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(check_updates, "interval", minutes=5, args=[app.bot])
 scheduler.start()
 
+# Состояния пользователя
 states = {}
 
-# Главное меню
+# Главное меню (только список каналов)
 def menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить канал", callback_data="add")],
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")]
     ])
 
+# Стартовое сообщение
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Бля ну ты же разберешься с двумя кнопка в боте",
+        "Скидывай ссылку на канал в чат",
         reply_markup=menu()
     )
 
-# Обработка нажатий на кнопки
+# Обработка нажатий кнопок
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
 
-    if q.data == "add":
-        states[uid] = "add"
-        await q.message.reply_text("Пришли ссылку на YouTube-канал")
-
-    elif q.data == "list":
+    # Показ списка каналов
+    if q.data == "list":
         rows = get_user_channels(uid)
         if not rows:
             await q.message.reply_text("📭 У тебя пока нет каналов")
@@ -51,21 +49,28 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = "📺 Твои каналы:\n\n"
         for i, (name, cid) in enumerate(rows, 1):
-            text += f"{i}️⃣ {name}\n"
+            text += f"{i}. {name}\n"
 
-        await q.message.reply_text(text)
+        # Кнопка для удаления по номеру
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")]
+        ])
+        await q.message.reply_text(text, reply_markup=kb)
 
-    elif q.data.startswith("del:"):
-        cid = q.data.split(":")[1]
-        remove_channel(uid, cid)
-        await q.message.reply_text("❌ Канал удалён")
+    # Начало удаления по номеру
+    elif q.data == "del_num":
+        states[uid] = "del_num"
+        await q.message.reply_text("Введи номер канала, который хочешь удалить")
 
-# Обработка сообщений
+# Обработка сообщений (ссылки и номера для удаления)
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
-    text = update.message.text
+    text = update.message.text.strip()
 
-    if states.get(uid) == "add":
+    # ----------------------
+    # Добавление нового канала
+    # ----------------------
+    if text.startswith("https://") or text.startswith("http://"):
         cid = resolve_channel(text)
         if not cid:
             await update.message.reply_text("❌ Не удалось определить канал")
@@ -82,17 +87,43 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
 
-        states.pop(uid)
+        await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=menu())
 
-        # inline-кнопки после добавления
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Добавить ещё канал", callback_data="add")],
-            [InlineKeyboardButton("❌ Удалить этот канал", callback_data=f"del:{cid}")]
-        ])
-        await update.message.reply_text(
-            f"✅ Канал добавлен: {name}",
-            reply_markup=kb
-        )
+    # ----------------------
+    # Удаление по номеру
+    # ----------------------
+    elif states.get(uid) == "del_num":
+        rows = get_user_channels(uid)
+        if not rows:
+            await update.message.reply_text("📭 У тебя пока нет каналов")
+            states.pop(uid, None)
+            return
+
+        try:
+            num = int(text)
+            if num < 1 or num > len(rows):
+                raise ValueError
+            cid_to_delete = rows[num - 1][1]
+            remove_channel(uid, cid_to_delete)
+            states.pop(uid, None)
+
+            # Отправляем обновлённый список после удаления
+            updated_rows = get_user_channels(uid)
+            if not updated_rows:
+                await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=menu())
+                return
+
+            updated_text = "📺 Твои каналы:\n\n"
+            for i, (name, cid) in enumerate(updated_rows, 1):
+                updated_text += f"{i}. {name}\n"
+
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")]
+            ])
+            await update.message.reply_text(updated_text, reply_markup=kb)
+
+        except ValueError:
+            await update.message.reply_text("ты долбаеб")
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
