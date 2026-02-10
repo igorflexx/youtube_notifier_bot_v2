@@ -1,6 +1,7 @@
 import sqlite3
 
-DB_PATH = "/data/database.db"  # Путь для Railway volume
+DB_PATH = "/data/database.db"
+
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
@@ -30,7 +31,6 @@ conn.commit()
 # -----------------------------
 
 def remove_channel(user_id, channel_id):
-    """Удаляет канал только у конкретного пользователя"""
     cursor.execute(
         "DELETE FROM subscriptions WHERE user_id=? AND channel_id=?",
         (user_id, channel_id)
@@ -38,7 +38,6 @@ def remove_channel(user_id, channel_id):
     conn.commit()
 
 def get_user_channels(user_id):
-    """Возвращает список каналов пользователя: [(name, channel_id), ...]"""
     cursor.execute("""
     SELECT c.channel_name, c.channel_id
     FROM channels c

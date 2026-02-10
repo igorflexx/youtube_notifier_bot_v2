@@ -1,26 +1,21 @@
 import os
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
-import feedparser
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
-DB_PATH = "/data/database.db"  # Railway volume
-
 TOKEN = os.getenv("BOT_TOKEN")
 app = ApplicationBuilder().token(TOKEN).build()
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
-scheduler.start()
-
 states = {}
-last_message = {}  # хранит ID сообщений для редактирования
+last_message = {}  # {user_id: message_id}
 
+# ---------------------------
 # Меню
+# ---------------------------
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -28,31 +23,26 @@ def main_menu():
     ])
 
 def back_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
 
-# Команда /start
+# ---------------------------
+# /start
+# ---------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text(
-        "Скидывай ссылку на канал в чат",
-        reply_markup=main_menu()
-    )
+    msg = await update.message.reply_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
     last_message[update.message.from_user.id] = msg.message_id
 
+# ---------------------------
 # Кнопки
+# ---------------------------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    message_id = q.message.message_id
-    last_message[uid] = message_id
+    last_message[uid] = q.message.message_id
 
     if q.data == "main_menu":
-        await q.message.edit_text(
-            "Скидывай ссылку на канал в чат",
-            reply_markup=main_menu()
-        )
+        await q.message.edit_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
         states.pop(uid, None)
         return
 
@@ -79,6 +69,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         video_list = []
         for name, cid in rows:
+            import feedparser
             feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
             if not feed.entries: continue
             entry = feed.entries[0]
@@ -88,29 +79,26 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
+# ---------------------------
 # Сообщения
+# ---------------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    if text.startswith("https://www.youtube.com/"):
+    # Добавление канала
+    if text.startswith("http://") or text.startswith("https://"):
         cid = resolve_channel(text)
         if not cid:
             await update.message.reply_text("❌ Не удалось определить канал")
             return
         name, last = get_channel_info(cid)
-        # Добавляем канал, last_video_id и last_notified_video_id одинаково
-        cursor.execute(
-            "INSERT OR IGNORE INTO channels (channel_id, channel_name, last_video_id, last_notified_video_id) VALUES (?, ?, ?, ?)",
-            (cid, name, last, last)
-        )
-        cursor.execute(
-            "INSERT OR IGNORE INTO subscriptions (user_id, channel_id) VALUES (?, ?)",
-            (uid, cid)
-        )
+        cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?, ?)", (cid, name, last, None))
+        cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
         conn.commit()
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
 
+    # Удаление по номеру
     elif states.get(uid) == "del_num":
         rows = get_user_channels(uid)
         if not rows:
@@ -139,9 +127,18 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("ты долбаеб", reply_markup=back_menu())
 
+# ---------------------------
 # Обработчики
+# ---------------------------
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
+
+# ---------------------------
+# Запуск APScheduler
+# ---------------------------
+scheduler = AsyncIOScheduler()
+scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
+scheduler.start()
 
 app.run_polling()
