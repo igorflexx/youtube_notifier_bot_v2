@@ -1,11 +1,9 @@
 import sqlite3
 
 DB_PATH = "/data/database.db"
-
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
-# Таблица каналов
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS channels (
     channel_id TEXT PRIMARY KEY,
@@ -13,8 +11,6 @@ CREATE TABLE IF NOT EXISTS channels (
     last_video_id TEXT
 )
 """)
-
-# Таблица подписок
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS subscriptions (
     user_id INTEGER,
@@ -22,22 +18,13 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     UNIQUE(user_id, channel_id)
 )
 """)
-
 conn.commit()
 
-# -----------------------------
-# Функции работы с каналами
-# -----------------------------
 def remove_channel(user_id, channel_id):
-    """Удаляет канал только у конкретного пользователя"""
-    cursor.execute(
-        "DELETE FROM subscriptions WHERE user_id=? AND channel_id=?",
-        (user_id, channel_id)
-    )
+    cursor.execute("DELETE FROM subscriptions WHERE user_id=? AND channel_id=?", (user_id, channel_id))
     conn.commit()
 
 def get_user_channels(user_id):
-    """Возвращает список каналов пользователя: [(name, channel_id), ...]"""
     cursor.execute("""
     SELECT c.channel_name, c.channel_id
     FROM channels c
