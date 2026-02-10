@@ -1,30 +1,21 @@
-# bot.py
 import os
+import asyncio
 from datetime import datetime
-
-import feedparser
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
-DB_PATH = "/data/database.db"
+DB_PATH = "/data/database.db"  # Railway volume
 TOKEN = os.getenv("BOT_TOKEN")
 
+# Состояния пользователей и последние сообщения
 states = {}
 last_message = {}
 
-# --- Меню ---
+# Меню
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -32,11 +23,9 @@ def main_menu():
     ])
 
 def back_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
 
-# --- Handlers ---
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -44,6 +33,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     last_message[update.message.from_user.id] = msg.message_id
 
+# Кнопки
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -55,6 +45,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
         states.pop(uid, None)
         return
+
     elif q.data == "list":
         rows = get_user_channels(uid)
         if not rows:
@@ -66,9 +57,11 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
         ])
         await q.message.edit_text(text, reply_markup=kb)
+
     elif q.data == "del_num":
         states[uid] = "del_num"
         await q.message.reply_text("Введи номер канала, который хочешь удалить", reply_markup=back_menu())
+
     elif q.data == "last_video":
         rows = get_user_channels(uid)
         if not rows:
@@ -76,24 +69,22 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         video_list = []
         for name, cid in rows:
+            import feedparser
             feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
-            if not feed.entries:
-                continue
+            if not feed.entries: continue
             entry = feed.entries[0]
             pub_time = datetime(*entry.published_parsed[:6])
             video_list.append({"channel": name, "title": entry.title, "link": entry.link, "pub": pub_time})
         video_list.sort(key=lambda x: x["pub"], reverse=True)
-        msg_text = "\n\n".join([
-            f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}"
-            for v in video_list
-        ])
+        msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
+# Сообщения
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    if "youtube.com" in text:
+    if text.startswith("https://www.youtube.com/channel/") or "/@" in text:
         cid = resolve_channel(text)
         if not cid:
             await update.message.reply_text("❌ Не удалось определить канал")
@@ -103,7 +94,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
         conn.commit()
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
-        return
 
     elif states.get(uid) == "del_num":
         rows = get_user_channels(uid)
@@ -131,27 +121,24 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if message_id:
                 await context.bot.edit_message_text(chat_id=uid, message_id=message_id, text=updated_text, reply_markup=kb)
         except ValueError:
-            await update.message.reply_text("Неверный номер канала", reply_markup=back_menu())
+            await update.message.reply_text("❌ Некорректный номер", reply_markup=back_menu())
 
-# --- Main ---
+# Основная функция
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # APScheduler стартует здесь, в уже существующем loop
+    # Scheduler для уведомлений
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
+    scheduler.add_job(lambda: check_updates(app.bot), "interval", minutes=1)
     scheduler.start()
 
-    # запуск бота без asyncio.run
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await app.updater.idle()  # держим бот живым
+    await app.run_polling()
 
-# на Railway просто вызываем main через существующий loop
-import asyncio
-asyncio.get_event_loop().create_task(main())
+# Запуск без asyncio.run() чтобы не было ошибки "already running loop"
+if __name__ == "__main__":
+    asyncio.get_event_loop().run_until_complete(main())
