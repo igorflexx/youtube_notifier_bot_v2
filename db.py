@@ -1,6 +1,5 @@
 import sqlite3
 
-# Путь к базе на Volume Railway
 DB_PATH = "/data/database.db"
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -24,19 +23,11 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 )
 """)
 
-# Таблица настроек (интервал оставляем по умолчанию)
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS settings (
-    user_id INTEGER PRIMARY KEY
-)
-""")
-
 conn.commit()
 
 # -----------------------------
 # Функции работы с каналами
 # -----------------------------
-
 def remove_channel(user_id, channel_id):
     """Удаляет канал только у конкретного пользователя"""
     cursor.execute(
