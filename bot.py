@@ -21,10 +21,10 @@ from scheduler import check_updates
 DB_PATH = "/data/database.db"
 TOKEN = os.getenv("BOT_TOKEN")
 
-# -------------------------
 states = {}
 last_message = {}
 
+# --- Меню ---
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -36,7 +36,7 @@ def back_menu():
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
     ])
 
-# -------------------------
+# --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -44,7 +44,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     last_message[update.message.from_user.id] = msg.message_id
 
-# -------------------------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -53,13 +52,9 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_message[uid] = message_id
 
     if q.data == "main_menu":
-        await q.message.edit_text(
-            "Скидывай ссылку на канал в чат",
-            reply_markup=main_menu()
-        )
+        await q.message.edit_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
         states.pop(uid, None)
         return
-
     elif q.data == "list":
         rows = get_user_channels(uid)
         if not rows:
@@ -71,11 +66,9 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
         ])
         await q.message.edit_text(text, reply_markup=kb)
-
     elif q.data == "del_num":
         states[uid] = "del_num"
         await q.message.reply_text("Введи номер канала, который хочешь удалить", reply_markup=back_menu())
-
     elif q.data == "last_video":
         rows = get_user_channels(uid)
         if not rows:
@@ -96,7 +89,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
-# -------------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
@@ -130,9 +122,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not updated_rows:
                 await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
                 return
-            updated_text = "📺 Твои каналы:\n\n" + "\n".join(
-                f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows)
-            )
+            updated_text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows))
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
@@ -143,7 +133,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("Неверный номер канала", reply_markup=back_menu())
 
-# -------------------------
+# --- Main ---
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -151,14 +141,17 @@ async def main():
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # APScheduler запускается **внутри loop**
+    # APScheduler стартует здесь, в уже существующем loop
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
     scheduler.start()
 
-    # Запуск бота (внутри уже существующего loop)
-    await app.run_polling()
+    # запуск бота без asyncio.run
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await app.updater.idle()  # держим бот живым
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+# на Railway просто вызываем main через существующий loop
+import asyncio
+asyncio.get_event_loop().create_task(main())
