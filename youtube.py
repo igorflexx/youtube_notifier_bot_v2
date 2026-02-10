@@ -3,38 +3,37 @@ import requests
 import feedparser
 
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+}
+
+
 def resolve_channel(url: str):
     """
-    Принимает любую ссылку на YouTube-канал и возвращает channel_id (UC...)
-    Поддерживает:
+    Надёжно определяет channel_id (UC...) для:
     - https://www.youtube.com/@handle
     - https://www.youtube.com/channel/UC...
     - https://www.youtube.com/user/username
     """
 
-    # 1️⃣ Если channel_id уже есть в ссылке
+    # 1️⃣ Если channel_id уже есть
     match = re.search(r"(UC[a-zA-Z0-9_-]{22})", url)
     if match:
         return match.group(1)
 
-    # 2️⃣ Пробуем через oEmbed (работает для @handle и /user/)
-    try:
-        response = requests.get(
-            "https://www.youtube.com/oembed",
-            params={
-                "url": url,
-                "format": "json"
-            },
-            timeout=10
-        )
+    # 2️⃣ Приводим к /about (самый надёжный способ)
+    if "/about" not in url:
+        url = url.rstrip("/") + "/about"
 
-        if response.status_code != 200:
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code != 200:
             return None
 
-        data = response.json()
-        author_url = data.get("author_url", "")
+        html = resp.text
 
-        match = re.search(r"(UC[a-zA-Z0-9_-]{22})", author_url)
+        # YouTube всегда кладёт channelId в JSON
+        match = re.search(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"', html)
         if match:
             return match.group(1)
 
