@@ -1,21 +1,35 @@
+# bot.py
 import os
-import asyncio
 from datetime import datetime
+
+import feedparser
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
+DB_PATH = "/data/database.db"  # путь к базе для Railway volume
 TOKEN = os.getenv("BOT_TOKEN")
 
+# -------------------------
+# Состояния и последние сообщения
+# -------------------------
 states = {}
 last_message = {}  # хранит ID сообщений для редактирования
 
-# ---------------------------
+# -------------------------
 # Меню
-# ---------------------------
+# -------------------------
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -27,9 +41,9 @@ def back_menu():
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
     ])
 
-# ---------------------------
+# -------------------------
 # Команда /start
-# ---------------------------
+# -------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -37,9 +51,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     last_message[update.message.from_user.id] = msg.message_id
 
-# ---------------------------
-# Обработка кнопок
-# ---------------------------
+# -------------------------
+# Кнопки меню
+# -------------------------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -78,7 +92,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         video_list = []
         for name, cid in rows:
-            import feedparser
             feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
             if not feed.entries:
                 continue
@@ -92,27 +105,25 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
-# ---------------------------
-# Обработка сообщений
-# ---------------------------
+# -------------------------
+# Сообщения
+# -------------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    # Добавление нового канала по ссылке
-    if text.startswith("https://www.youtube.com/"):
+    # Добавление канала
+    if "youtube.com" in text:
         cid = resolve_channel(text)
         if not cid:
             await update.message.reply_text("❌ Не удалось определить канал")
             return
         name, last = get_channel_info(cid)
-        if not name:
-            await update.message.reply_text("❌ Не удалось получить данные канала")
-            return
         cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last))
         cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
         conn.commit()
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
+        return
 
     # Удаление канала
     elif states.get(uid) == "del_num":
@@ -132,7 +143,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not updated_rows:
                 await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
                 return
-            updated_text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows))
+            updated_text = "📺 Твои каналы:\n\n" + "\n".join(
+                f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows)
+            )
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
@@ -141,28 +154,26 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if message_id:
                 await context.bot.edit_message_text(chat_id=uid, message_id=message_id, text=updated_text, reply_markup=kb)
         except ValueError:
-            await update.message.reply_text("Неверный номер", reply_markup=back_menu())
+            await update.message.reply_text("Неверный номер канала", reply_markup=back_menu())
 
-# ---------------------------
-# Главная функция
-# ---------------------------
-async def main():
+# -------------------------
+# Запуск бота
+# -------------------------
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # Запуск APScheduler для уведомлений
+    # APScheduler
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
     scheduler.start()
 
-    # Запуск бота
-    await app.run_polling()
+    # Запуск Telegram бота
+    app.run_polling()
 
-# ---------------------------
-# Запуск
-# ---------------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
