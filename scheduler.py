@@ -1,6 +1,8 @@
 import feedparser
 from db import cursor, conn
 
+CHECK_INTERVAL = 300  # 5 минут
+
 def check_updates(bot):
     cursor.execute("SELECT channel_id, last_video_id FROM channels")
     channels = cursor.fetchall()
@@ -16,12 +18,14 @@ def check_updates(bot):
         video_id = entry.yt_videoid
 
         if video_id != last_video:
+            # обновляем последний просмотренный видео ID
             cursor.execute(
                 "UPDATE channels SET last_video_id=? WHERE channel_id=?",
                 (video_id, channel_id)
             )
             conn.commit()
 
+            # уведомляем всех подписанных пользователей
             cursor.execute(
                 "SELECT user_id FROM subscriptions WHERE channel_id=?",
                 (channel_id,)

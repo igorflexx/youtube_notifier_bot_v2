@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from db import cursor, conn
+from db import cursor, conn, remove_channel, get_user_channels
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
@@ -20,16 +20,20 @@ scheduler.start()
 
 states = {}
 
+# Главное меню
 def menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Добавить канал", callback_data="add")],
-        [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
-        [InlineKeyboardButton("⏱ Интервал проверки", callback_data="interval")]
+        [InlineKeyboardButton("📋 Мои каналы", callback_data="list")]
     ])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 YouTube Notifier", reply_markup=menu())
+    await update.message.reply_text(
+        "Бля ну ты же разберешься с двумя кнопка в боте",
+        reply_markup=menu()
+    )
 
+# Обработка нажатий на кнопки
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -40,37 +44,23 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Пришли ссылку на YouTube-канал")
 
     elif q.data == "list":
-        cursor.execute("""
-        SELECT c.channel_name, c.channel_id
-        FROM channels c
-        JOIN subscriptions s ON c.channel_id=s.channel_id
-        WHERE s.user_id=?
-        """, (uid,))
-        rows = cursor.fetchall()
-
+        rows = get_user_channels(uid)
         if not rows:
-            await q.message.reply_text("Список пуст")
+            await q.message.reply_text("📭 У тебя пока нет каналов")
             return
 
-        for name, cid in rows:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Удалить", callback_data=f"del:{cid}")]
-            ])
-            await q.message.reply_text(f"📺 {name}", reply_markup=kb)
+        text = "📺 Твои каналы:\n\n"
+        for i, (name, cid) in enumerate(rows, 1):
+            text += f"{i}️⃣ {name}\n"
+
+        await q.message.reply_text(text)
 
     elif q.data.startswith("del:"):
         cid = q.data.split(":")[1]
-        cursor.execute(
-            "DELETE FROM subscriptions WHERE user_id=? AND channel_id=?",
-            (uid, cid)
-        )
-        conn.commit()
+        remove_channel(uid, cid)
         await q.message.reply_text("❌ Канал удалён")
 
-    elif q.data == "interval":
-        states[uid] = "interval"
-        await q.message.reply_text("Отправь интервал в минутах (например 5)")
-
+# Обработка сообщений
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text
@@ -87,28 +77,22 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (cid, name, last)
         )
         cursor.execute(
-            "INSERT INTO subscriptions VALUES (?, ?)",
+            "INSERT OR IGNORE INTO subscriptions VALUES (?, ?)",
             (uid, cid)
         )
         conn.commit()
 
         states.pop(uid)
-        await update.message.reply_text(f"✅ Канал добавлен: {name}")
 
-    elif states.get(uid) == "interval":
-        try:
-            minutes = int(text)
-            scheduler.remove_all_jobs()
-            scheduler.add_job(
-                check_updates, "interval",
-                minutes=minutes, args=[app.bot]
-            )
-            await update.message.reply_text(
-                f"⏱ Интервал установлен: {minutes} мин"
-            )
-            states.pop(uid)
-        except:
-            await update.message.reply_text("❌ Введи число")
+        # inline-кнопки после добавления
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Добавить ещё канал", callback_data="add")],
+            [InlineKeyboardButton("❌ Удалить этот канал", callback_data=f"del:{cid}")]
+        ])
+        await update.message.reply_text(
+            f"✅ Канал добавлен: {name}",
+            reply_markup=kb
+        )
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
