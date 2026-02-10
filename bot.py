@@ -6,13 +6,10 @@ from telegram.ext import (
     ContextTypes, filters
 )
 from apscheduler.schedulers.background import BackgroundScheduler
-import sqlite3
 from datetime import datetime
-import feedparser
-
-from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
+from db import cursor, conn, get_user_channels, remove_channel
 
 # ----------------------
 # Настройка бота
@@ -27,7 +24,9 @@ scheduler.start()
 states = {}
 last_message = {}  # {user_id: message_id} для редактирования меню
 
-# Главное меню
+# ----------------------
+# Меню
+# ----------------------
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -50,7 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_message[update.message.from_user.id] = msg.message_id
 
 # ----------------------
-# Обработка кнопок
+# Кнопки
 # ----------------------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -104,13 +103,13 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text(msg, reply_markup=back_menu())
 
 # ----------------------
-# Обработка сообщений
+# Сообщения
 # ----------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    # Добавление нового канала по ссылке
+    # Добавление нового канала
     if text.startswith("http://") or text.startswith("https://"):
         cid = resolve_channel(text)
         if not cid:
@@ -127,6 +126,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (uid, cid)
         )
         conn.commit()
+
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
 
     # Удаление по номеру
