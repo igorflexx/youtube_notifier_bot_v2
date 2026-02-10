@@ -1,43 +1,32 @@
-import re
 import feedparser
-import requests
-
 
 def resolve_channel(url: str):
-    """Возвращает channel_id по ссылке канала, поддерживает /channel/ID и /@handle"""
-    url = url.strip()
-
-    # прямой channel ID
+    """
+    Возвращает channel_id по ссылке канала.
+    Поддерживает /channel/ID и /@handle через RSS.
+    """
     if "channel/" in url:
         return url.split("channel/")[1].split("/")[0]
 
-    # handle
     if "/@" in url:
         handle = url.split("/@")[1].split("/")[0]
-        try:
-            # Пробуем RSS: https://www.youtube.com/feeds/videos.xml?user=HANDLE
-            rss_url = f"https://www.youtube.com/feeds/videos.xml?user={handle}"
-            feed = feedparser.parse(rss_url)
-            if feed.entries:
-                # берем channel_id из feed
-                return feed.feed.yt_channelid
-        except:
-            pass
-
-        # fallback: старая проверка через HTML (не всегда работает)
-        try:
-            html = requests.get(f"https://www.youtube.com/@{handle}").text
-            match = re.search(r'"channelId":"(UC[0-9A-Za-z_-]{22})"', html)
-            if match:
-                return match.group(1)
-        except:
-            pass
+        # Попробуем получить feed RSS напрямую
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?user={handle}"
+        feed = feedparser.parse(feed_url)
+        if feed.entries:
+            return feed.feed.id.split(":")[-1]  # Вытаскиваем channelId из feed.feed.id
+        # Если не получилось через user, пробуем через handle (редирект)
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel=@{handle}"
+        feed = feedparser.parse(feed_url)
+        if feed.entries:
+            return feed.feed.id.split(":")[-1]
 
     return None
 
-
 def get_channel_info(channel_id: str):
-    """Возвращает (channel_name, last_video_id)"""
+    """
+    Возвращает (channel_name, last_video_id)
+    """
     feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
     if not feed.entries:
         return None, None
