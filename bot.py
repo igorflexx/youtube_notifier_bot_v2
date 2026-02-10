@@ -7,14 +7,15 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 import sqlite3
-
+from datetime import datetime
+import feedparser
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
 # ----------------------
 # Подключение к базе
 # ----------------------
-DB_PATH = "database.db"  # оставляем как есть
+DB_PATH = "database.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
@@ -60,7 +61,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 app = ApplicationBuilder().token(TOKEN).build()
 
 scheduler = BackgroundScheduler()
-scheduler.add_job(check_updates, "interval", minutes=5, args=[app.bot])
+scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
 scheduler.start()
 
 states = {}
@@ -68,7 +69,8 @@ states = {}
 # Главное меню
 def menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Мои каналы", callback_data="list")]
+        [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
+        [InlineKeyboardButton("🎬 Последнее видео", callback_data="last_video")]
     ])
 
 # ----------------------
@@ -79,22 +81,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Скидывай ссылку на канал в чат",
         reply_markup=menu()
     )
-
-async def check_last_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
-    rows = get_user_channels(uid)
-    if not rows:
-        await update.message.reply_text("📭 У тебя пока нет каналов")
-        return
-
-    # Правильный цикл: name, cid
-    for name, cid in rows:
-        ch_name, last_video = get_channel_info(cid)
-        if last_video:
-            link = f"https://www.youtube.com/watch?v={last_video}"
-            await update.message.reply_text(f"🎬 Последнее видео на канале {ch_name}:\n{link}")
-        else:
-            await update.message.reply_text(f"❌ Не удалось получить видео для {ch_name}")
 
 # ----------------------
 # Обработка кнопок
@@ -120,12 +106,46 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await q.message.reply_text(text, reply_markup=kb)
 
+    # Начало удаления по номеру
     elif q.data == "del_num":
         states[uid] = "del_num"
         await q.message.reply_text("Введи номер канала, который хочешь удалить")
 
+    # Последние видео всех каналов
+    elif q.data == "last_video":
+        rows = get_user_channels(uid)
+        if not rows:
+            await q.message.reply_text("📭 У тебя пока нет каналов")
+            return
+
+        video_list = []
+
+        for name, cid in rows:
+            # Получаем RSS
+            feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
+            if not feed.entries:
+                continue
+            entry = feed.entries[0]
+            pub_time = datetime(*entry.published_parsed[:6])
+            video_list.append({
+                "channel": name,
+                "title": entry.title,
+                "link": entry.link,
+                "pub": pub_time
+            })
+
+        # Сортировка по дате, самые новые сверху
+        video_list.sort(key=lambda x: x["pub"], reverse=True)
+
+        msg = ""
+        for v in video_list:
+            date_str = v["pub"].strftime("%d %B %H:%M")  # 10 января 20:00
+            msg += f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {date_str}\n🔗 {v['link']}\n\n"
+
+        await q.message.reply_text(msg.strip(), reply_markup=menu())
+
 # ----------------------
-# Обработка сообщений
+# Обработка сообщений (ссылки или номера для удаления)
 # ----------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
@@ -185,10 +205,9 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("ты долбаеб")
 
 # ----------------------
-# Добавляем все обработчики
+# Добавляем обработчики
 # ----------------------
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("checklast", check_last_video))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
