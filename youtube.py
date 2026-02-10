@@ -1,36 +1,23 @@
+import re
 import feedparser
 from datetime import datetime
-import re
 
-# --- Определяем channel_id ---
-def resolve_channel(url_or_username):
-    if "channel/" in url_or_username:
-        return url_or_username.split("channel/")[1].split("/")[0]
-    elif "/@" in url_or_username:
-        username = url_or_username.split("/@")[1].split("/")[0]
+# Преобразование ссылки на канал в ID
+def resolve_channel(url: str):
+    if "/channel/" in url:
+        return url.split("/channel/")[1].split("/")[0]
+    elif "/@" in url:
+        # username -> channel ID через RSS
+        username = url.split("/@")[1].split("/")[0]
         feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?user={username}")
         if feed.entries:
             return feed.entries[0].yt_channelid
     return None
 
-# --- Получаем инфо о канале ---
-def get_channel_info(channel_id):
-    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
-    if not feed.entries:
-        return ("Неизвестный канал", None)
-    entry = feed.entries[0]
-    pub_time = datetime(*entry.published_parsed[:6])
-    return (feed.feed.title, entry.id)
-
-# --- Последнее видео ---
-def get_latest_video(channel_id):
-    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
-    if not feed.entries:
-        return None
-    entry = feed.entries[0]
-    pub_time = datetime(*entry.published_parsed[:6])
-    return {
-        "title": entry.title,
-        "link": entry.link,
-        "pub": pub_time
-    }
+# Получение имени канала и последнего видео
+def get_channel_info(cid: str):
+    feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
+    if feed.entries:
+        last_video_time = datetime(*feed.entries[0].published_parsed[:6])
+        return feed.feed.title, last_video_time
+    return "Неизвестный канал", None

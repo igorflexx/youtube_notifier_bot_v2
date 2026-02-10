@@ -1,14 +1,12 @@
 import os
-import asyncio
 from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from db import cursor, conn, get_user_channels, remove_channel
-from youtube import resolve_channel, get_channel_info, get_latest_video
+from youtube import resolve_channel, get_channel_info
+from scheduler import check_updates
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import asyncio
 
 TOKEN = os.getenv("BOT_TOKEN")
 
@@ -26,21 +24,16 @@ def main_menu():
 def back_menu():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
 
-# --- Команда /start ---
+# --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text(
-        "Скидывай ссылку на канал в чат",
-        reply_markup=main_menu()
-    )
+    msg = await update.message.reply_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
     last_message[update.message.from_user.id] = msg.message_id
 
-# --- Кнопки ---
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    message_id = q.message.message_id
-    last_message[uid] = message_id
+    last_message[uid] = q.message.message_id
 
     if q.data == "main_menu":
         await q.message.edit_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
@@ -68,17 +61,16 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
+        import feedparser
         video_list = []
         for name, cid in rows:
-            v = get_latest_video(cid)
-            if not v:
-                continue
-            video_list.append({"channel": name, **v})
+            feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
+            if not feed.entries: continue
+            entry = feed.entries[0]
+            pub_time = datetime(*entry.published_parsed[:6])
+            video_list.append({"channel": name, "title": entry.title, "link": entry.link, "pub": pub_time})
         video_list.sort(key=lambda x: x["pub"], reverse=True)
-        msg_text = "\n\n".join(
-            f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}"
-            for v in video_list
-        )
+        msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
 # --- Сообщения ---
@@ -105,32 +97,14 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         try:
             num = int(text)
-            if num < 1 or num > len(rows):
-                raise ValueError
             cid_to_delete = rows[num - 1][1]
             remove_channel(uid, cid_to_delete)
             states.pop(uid, None)
-            updated_rows = get_user_channels(uid)
-            if not updated_rows:
-                await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
-                return
-            updated_text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows))
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-            ])
-            message_id = last_message.get(uid)
-            if message_id:
-                await context.bot.edit_message_text(chat_id=uid, message_id=message_id, text=updated_text, reply_markup=kb)
+            await update.message.reply_text("Канал удалён", reply_markup=back_menu())
         except ValueError:
             await update.message.reply_text("❌ Некорректный номер", reply_markup=back_menu())
 
-# --- Проверка новых видео ---
-async def notify_new_videos(bot):
-    from scheduler import check_updates
-    await check_updates(bot)
-
-# --- Основная функция ---
+# --- Основной запуск ---
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -139,13 +113,15 @@ async def main():
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # Scheduler
+    # Scheduler для уведомлений
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: notify_new_videos(app.bot), "interval", minutes=1)
+    scheduler.add_job(lambda: check_updates(app.bot), "interval", minutes=1)
     scheduler.start()
 
     await app.run_polling()
 
 # --- Запуск ---
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
