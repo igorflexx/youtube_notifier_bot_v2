@@ -68,7 +68,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     # ----------------------
-    # Добавление нового канала
+    # Добавление нового канала через ссылку
     # ----------------------
     if text.startswith("https://") or text.startswith("http://"):
         cid = resolve_channel(text)
@@ -125,7 +125,29 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("ты долбаеб")
 
+# ----------------------
+# Новая команда для мгновенной проверки последнего видео
+# ----------------------
+async def check_last_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    rows = get_user_channels(uid)
+    if not rows:
+        await update.message.reply_text("📭 У тебя пока нет каналов")
+        return
+
+    for (cid,) in rows:
+        name, last_video = get_channel_info(cid)
+        if last_video:
+            link = f"https://www.youtube.com/watch?v={last_video}"
+            await update.message.reply_text(f"🎬 Последнее видео на канале {name}:\n{link}")
+        else:
+            await update.message.reply_text(f"❌ Не удалось получить видео для {name}")
+
+# ----------------------
+# Добавляем все обработчики
+# ----------------------
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("checklast", check_last_video))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
