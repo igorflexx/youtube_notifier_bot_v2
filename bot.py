@@ -19,7 +19,6 @@ DB_PATH = "database.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
-# Создание таблиц
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS channels (
     channel_id TEXT PRIMARY KEY,
@@ -67,10 +66,15 @@ scheduler.start()
 states = {}
 
 # Главное меню
-def menu():
+def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
         [InlineKeyboardButton("🎬 Последнее видео", callback_data="last_video")]
+    ])
+
+def back_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
     ])
 
 # ----------------------
@@ -79,7 +83,7 @@ def menu():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
-        reply_markup=menu()
+        reply_markup=main_menu()
     )
 
 # ----------------------
@@ -90,11 +94,20 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     uid = q.from_user.id
 
+    if q.data == "main_menu":
+        # Вернуться в главное меню
+        await q.message.edit_text(
+            "Скидывай ссылку на канал в чат",
+            reply_markup=main_menu()
+        )
+        states.pop(uid, None)
+        return
+
     # Показ списка каналов
     if q.data == "list":
         rows = get_user_channels(uid)
         if not rows:
-            await q.message.reply_text("📭 У тебя пока нет каналов")
+            await q.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
 
         text = "📺 Твои каналы:\n\n"
@@ -102,26 +115,26 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"{i}. {name}\n"
 
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")]
+            [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
         ])
         await q.message.reply_text(text, reply_markup=kb)
 
     # Начало удаления по номеру
     elif q.data == "del_num":
         states[uid] = "del_num"
-        await q.message.reply_text("Введи номер канала, который хочешь удалить")
+        await q.message.reply_text("Введи номер канала, который хочешь удалить", reply_markup=back_menu())
 
     # Последние видео всех каналов
     elif q.data == "last_video":
         rows = get_user_channels(uid)
         if not rows:
-            await q.message.reply_text("📭 У тебя пока нет каналов")
+            await q.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
 
         video_list = []
 
         for name, cid in rows:
-            # Получаем RSS
             feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
             if not feed.entries:
                 continue
@@ -134,7 +147,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "pub": pub_time
             })
 
-        # Сортировка по дате, самые новые сверху
+        # Сортировка по дате, новые видео сверху
         video_list.sort(key=lambda x: x["pub"], reverse=True)
 
         msg = ""
@@ -142,7 +155,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             date_str = v["pub"].strftime("%d %B %H:%M")  # 10 января 20:00
             msg += f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {date_str}\n🔗 {v['link']}\n\n"
 
-        await q.message.reply_text(msg.strip(), reply_markup=menu())
+        await q.message.reply_text(msg.strip(), reply_markup=back_menu())
 
 # ----------------------
 # Обработка сообщений (ссылки или номера для удаления)
@@ -168,13 +181,13 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (uid, cid)
         )
         conn.commit()
-        await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=menu())
+        await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
 
     # Удаление по номеру
     elif states.get(uid) == "del_num":
         rows = get_user_channels(uid)
         if not rows:
-            await update.message.reply_text("📭 У тебя пока нет каналов")
+            await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             states.pop(uid, None)
             return
 
@@ -189,7 +202,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Обновлённый список после удаления
             updated_rows = get_user_channels(uid)
             if not updated_rows:
-                await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=menu())
+                await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
                 return
 
             updated_text = "📺 Твои каналы:\n\n"
@@ -197,12 +210,13 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 updated_text += f"{i}. {name}\n"
 
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")]
+                [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
             ])
             await update.message.reply_text(updated_text, reply_markup=kb)
 
         except ValueError:
-            await update.message.reply_text("ты долбаеб")
+            await update.message.reply_text("ты долбаеб", reply_markup=back_menu())
 
 # ----------------------
 # Добавляем обработчики
