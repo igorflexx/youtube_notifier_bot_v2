@@ -1,12 +1,10 @@
 import os
 import asyncio
 from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters, JobQueue
 from db import cursor, conn, get_user_channels, remove_channel
-from youtube import resolve_channel, get_channel_info
-from scheduler import check_updates
+from youtube import resolve_channel, get_channel_info, get_latest_video
 
 DB_PATH = "/data/database.db"  # Railway volume
 TOKEN = os.getenv("BOT_TOKEN")
@@ -69,13 +67,14 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         video_list = []
         for name, cid in rows:
-            import feedparser
-            feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
-            if not feed.entries: continue
-            entry = feed.entries[0]
-            pub_time = datetime(*entry.published_parsed[:6])
-            video_list.append({"channel": name, "title": entry.title, "link": entry.link, "pub": pub_time})
+            video = get_latest_video(cid)
+            if not video:
+                continue
+            video_list.append({"channel": name, **video})
         video_list.sort(key=lambda x: x["pub"], reverse=True)
+        if not video_list:
+            await q.message.edit_text("📭 Видео не найдены", reply_markup=back_menu())
+            return
         msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
@@ -123,6 +122,23 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ Некорректный номер", reply_markup=back_menu())
 
+# Job для уведомлений
+async def notify_new_videos(context: ContextTypes.DEFAULT_TYPE):
+    cursor.execute("SELECT DISTINCT user_id FROM subscriptions")
+    users = [row[0] for row in cursor.fetchall()]
+    for uid in users:
+        rows = get_user_channels(uid)
+        for name, cid in rows:
+            video = get_latest_video(cid)
+            if not video:
+                continue
+            last = cursor.execute("SELECT last_video FROM channels WHERE channel_id=?", (cid,)).fetchone()[0]
+            if video['pub'].timestamp() > last:
+                # Отправка уведомления
+                await context.bot.send_message(chat_id=uid, text=f"🎬 Новый ролик на {name}:\n{video['title']}\n{video['link']}")
+                cursor.execute("UPDATE channels SET last_video=? WHERE channel_id=?", (video['pub'].timestamp(), cid))
+                conn.commit()
+
 # Основная функция
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -132,13 +148,11 @@ async def main():
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # Scheduler для уведомлений
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: check_updates(app.bot), "interval", minutes=1)
-    scheduler.start()
+    # JobQueue для уведомлений
+    app.job_queue.run_repeating(notify_new_videos, interval=60, first=10)
 
+    # Старт бота
     await app.run_polling()
 
-# Запуск без asyncio.run() чтобы не было ошибки "already running loop"
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
