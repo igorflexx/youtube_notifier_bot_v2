@@ -18,18 +18,13 @@ from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
-DB_PATH = "/data/database.db"  # путь к базе для Railway volume
+DB_PATH = "/data/database.db"
 TOKEN = os.getenv("BOT_TOKEN")
 
 # -------------------------
-# Состояния и последние сообщения
-# -------------------------
 states = {}
-last_message = {}  # хранит ID сообщений для редактирования
+last_message = {}
 
-# -------------------------
-# Меню
-# -------------------------
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -42,8 +37,6 @@ def back_menu():
     ])
 
 # -------------------------
-# Команда /start
-# -------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -51,8 +44,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     last_message[update.message.from_user.id] = msg.message_id
 
-# -------------------------
-# Кнопки меню
 # -------------------------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -106,13 +97,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
 # -------------------------
-# Сообщения
-# -------------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    # Добавление канала
     if "youtube.com" in text:
         cid = resolve_channel(text)
         if not cid:
@@ -125,7 +113,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
         return
 
-    # Удаление канала
     elif states.get(uid) == "del_num":
         rows = get_user_channels(uid)
         if not rows:
@@ -157,23 +144,21 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Неверный номер канала", reply_markup=back_menu())
 
 # -------------------------
-# Запуск бота
-# -------------------------
-def main():
+async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # APScheduler
+    # APScheduler запускается **внутри loop**
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
     scheduler.start()
 
-    # Запуск Telegram бота
-    app.run_polling()
+    # Запуск бота (внутри уже существующего loop)
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
