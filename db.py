@@ -1,6 +1,9 @@
 import sqlite3
 
-conn = sqlite3.connect("database.db", check_same_thread=False)
+# Путь к базе на Railway volume
+DB_PATH = "/data/database.db"
+
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 # Таблица каналов
@@ -21,7 +24,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 )
 """)
 
-# Таблица настроек (интервал больше не нужен, оставим по умолчанию)
+# Таблица настроек (интервал по умолчанию 1 минута)
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS settings (
     user_id INTEGER PRIMARY KEY

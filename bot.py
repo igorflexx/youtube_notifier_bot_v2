@@ -9,49 +9,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import sqlite3
 from datetime import datetime
 import feedparser
+
+from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
-
-# ----------------------
-# Подключение к базе
-# ----------------------
-DB_PATH = "database.db"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS channels (
-    channel_id TEXT PRIMARY KEY,
-    channel_name TEXT,
-    last_video_id TEXT
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS subscriptions (
-    user_id INTEGER,
-    channel_id TEXT
-)
-""")
-conn.commit()
-
-# ----------------------
-# Вспомогательные функции
-# ----------------------
-def get_user_channels(user_id):
-    cursor.execute("""
-        SELECT c.channel_name, c.channel_id
-        FROM channels c
-        JOIN subscriptions s ON c.channel_id=s.channel_id
-        WHERE s.user_id=?
-    """, (user_id,))
-    return cursor.fetchall()
-
-def remove_channel(user_id, channel_id):
-    cursor.execute(
-        "DELETE FROM subscriptions WHERE user_id=? AND channel_id=?",
-        (user_id, channel_id)
-    )
-    conn.commit()
 
 # ----------------------
 # Настройка бота
@@ -96,7 +57,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     uid = q.from_user.id
     message_id = q.message.message_id
-    last_message[uid] = message_id  # Сохраняем для редактирования
+    last_message[uid] = message_id
 
     if q.data == "main_menu":
         await q.message.edit_text(
@@ -195,7 +156,6 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
                 [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
             ])
-            # Редактируем старое сообщение списка
             message_id = last_message.get(uid)
             if message_id:
                 await context.bot.edit_message_text(chat_id=uid, message_id=message_id, text=updated_text, reply_markup=kb)
