@@ -9,19 +9,29 @@ from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
 
-DB_PATH = "/data/database.db"  # для Railway volume
-
+# ----------------------
+# Настройки
+# ----------------------
+DB_PATH = "/data/database.db"  # путь к volume на Railway
 TOKEN = os.getenv("BOT_TOKEN")
 app = ApplicationBuilder().token(TOKEN).build()
 
+# ----------------------
+# Планировщик уведомлений
+# ----------------------
 scheduler = BackgroundScheduler()
 scheduler.add_job(check_updates, "interval", minutes=1, args=[app.bot])
 scheduler.start()
 
+# ----------------------
+# Состояния и последняя отредактированная ссылка
+# ----------------------
 states = {}
-last_message = {}  # хранит ID сообщений для редактирования
+last_message = {}  # {user_id: message_id}
 
+# ----------------------
 # Меню
+# ----------------------
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -33,7 +43,9 @@ def back_menu():
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
     ])
 
+# ----------------------
 # Команда /start
+# ----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -41,13 +53,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     last_message[update.message.from_user.id] = msg.message_id
 
-# Кнопки
+# ----------------------
+# Обработка кнопок
+# ----------------------
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    message_id = q.message.message_id
-    last_message[uid] = message_id
+    last_message[uid] = q.message.message_id
 
     if q.data == "main_menu":
         await q.message.edit_text(
@@ -89,23 +102,31 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
-# Сообщения
+# ----------------------
+# Обработка сообщений
+# ----------------------
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    if text.startswith("https://www.youtube.com/channel/"):
+    # Любая ссылка на youtube
+    if text.startswith("https://www.youtube.com/"):
         cid = resolve_channel(text)
         if not cid:
             await update.message.reply_text("❌ Не удалось определить канал")
             return
         name, last = get_channel_info(cid)
+        if not name:
+            await update.message.reply_text("❌ Не удалось получить информацию о канале")
+            return
         cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last))
         cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
         conn.commit()
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
+        return
 
-    elif states.get(uid) == "del_num":
+    # Удаление по номеру
+    if states.get(uid) == "del_num":
         rows = get_user_channels(uid)
         if not rows:
             await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
@@ -118,10 +139,12 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cid_to_delete = rows[num - 1][1]
             remove_channel(uid, cid_to_delete)
             states.pop(uid, None)
+
             updated_rows = get_user_channels(uid)
             if not updated_rows:
                 await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
                 return
+
             updated_text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows))
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
@@ -133,9 +156,14 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("ты долбаеб", reply_markup=back_menu())
 
+# ----------------------
 # Обработчики
+# ----------------------
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
+# ----------------------
+# Запуск бота
+# ----------------------
 app.run_polling()
