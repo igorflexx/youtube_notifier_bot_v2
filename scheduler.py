@@ -1,50 +1,30 @@
-# scheduler.py
+from db import cursor, conn, get_user_channels
+from youtube import get_latest_video
 from datetime import datetime
-import feedparser
-from db import get_user_channels, cursor, conn
+import asyncio
 
+# --- Проверка обновлений ---
 async def check_updates(bot):
-    """
-    Проверяем новые видео для всех пользователей и каналов.
-    Если есть новое видео — шлем уведомление.
-    """
-    # Получаем всех пользователей с их каналами
-    users_channels = {}  # {uid: [(channel_name, channel_id)]}
-    cursor.execute("SELECT user_id, channel_id FROM subscriptions")
-    rows = cursor.fetchall()
-    for uid, cid in rows:
-        users_channels.setdefault(uid, []).append(cid)
+    cursor.execute("SELECT channel_id, last_video_id FROM channels")
+    channels = cursor.fetchall()
 
-    for uid, cids in users_channels.items():
-        for cid in cids:
-            # Берем название канала и последнее известное видео из базы
-            cursor.execute("SELECT name, last_video_id FROM channels WHERE channel_id=?", (cid,))
-            res = cursor.fetchone()
-            if not res:
-                continue
-            name, last_video_id = res
+    for channel_id, last_video_id in channels:
+        latest = get_latest_video(channel_id)
+        if not latest:
+            continue
 
-            feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
-            if not feed.entries:
-                continue
+        # Если видео новое
+        if latest["link"] != last_video_id:
+            # Обновляем в базе
+            cursor.execute("UPDATE channels SET last_video_id=? WHERE channel_id=?", (latest["link"], channel_id))
+            conn.commit()
 
-            entry = feed.entries[0]
-            video_id = entry.yt_videoid
-            video_title = entry.title
-            video_link = entry.link
-            published = datetime(*entry.published_parsed[:6])
-
-            # Если видео новое
-            if last_video_id != video_id:
-                # Сохраняем новый ID видео
-                cursor.execute("UPDATE channels SET last_video_id=? WHERE channel_id=?", (video_id, cid))
-                conn.commit()
-
-                # Отправляем уведомление пользователю
+            # Отправляем уведомления всем подписанным
+            cursor.execute("SELECT user_id FROM subscriptions WHERE channel_id=?", (channel_id,))
+            subscribers = cursor.fetchall()
+            text = f"📢 Новый ролик!\n🎬 {latest['title']}\n🗓 {latest['pub'].strftime('%d %B %H:%M')}\n🔗 {latest['link']}"
+            for (user_id,) in subscribers:
                 try:
-                    await bot.send_message(
-                        chat_id=uid,
-                        text=f"📢 Новое видео на канале {name}!\n🎬 {video_title}\n🗓 {published.strftime('%d %B %H:%M')}\n🔗 {video_link}"
-                    )
+                    await bot.send_message(chat_id=user_id, text=text)
                 except Exception as e:
-                    print(f"Ошибка при отправке уведомления {uid}: {e}")
+                    print(f"Не удалось отправить пользователю {user_id}: {e}")
