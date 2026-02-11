@@ -28,20 +28,21 @@ def get_channel_info(channel_url: str) -> dict | None:
         return None
 
 def get_latest_video(channel_url: str) -> dict | None:
-    rss_url = f"{channel_url}/videos?view=0&sort=p&flow=grid&pbj=1"
-    try:
-        # RSS через feedparser
-        feed_url = channel_url + "/videos?flow=grid&view=0&sort=p"
-        feed = feedparser.parse(feed_url)
-        if not feed.entries:
-            return None
-        entry = feed.entries[0]
-        video_id = entry.link.split("/")[-1]
-        return {
-            "id": video_id,
-            "title": entry.title,
-            "url": entry.link,
-            "published": entry.published
-        }
-    except Exception:
+    # Берём настоящий RSS канал
+    if channel_url.startswith("https://www.youtube.com/@"):
+        username = channel_url.split("/@")[-1]
+        rss_url = f"https://www.youtube.com/feeds/videos.xml?user={username}"
+    else:
+        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_url.split('/')[-1]}"
+
+    feed = feedparser.parse(rss_url)
+    if not feed.entries:
         return None
+
+    entry = feed.entries[0]
+    return {
+        "id": entry.id,
+        "title": entry.title,
+        "url": entry.link,
+        "published": entry.published
+    }

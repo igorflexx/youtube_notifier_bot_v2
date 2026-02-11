@@ -32,7 +32,7 @@ def back_kb():
 def delete_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Удалить канал", callback_data="BTN_DELETE")],
-        [InlineKeyboardButton("🏠 Домой", callback_data="BTN_HOME")],
+        [InlineKeyboardButton("🏠 Домой", callback_data="BTN_HOME")]
     ])
 
 # ---------- /start ----------
@@ -145,6 +145,7 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_channels(DATA_FILE, channels)
 
+    # После удаления оставляем только кнопку "Домой"
     await update.message.reply_text(
         f"🗑 Канал удалён: {removed['title']}",
         reply_markup=back_kb()
@@ -166,9 +167,12 @@ async def show_latest(q, context):
         if not video:
             continue
 
-        # Перевод времени публикации в МСК
-        dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
-        dt_msk = dt + timedelta(hours=3)
+        # Время публикации корректно берём из feed, переводим в МСК
+        try:
+            dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
+            dt_msk = dt + timedelta(hours=3)
+        except Exception:
+            dt_msk = datetime.now()
         date = dt_msk.strftime("%d %B %H:%M")
 
         text += (
@@ -197,8 +201,11 @@ async def notify_job(context: ContextTypes.DEFAULT_TYPE):
 
             last_videos[ch["channel_id"]] = video["id"]
 
-            dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
-            dt_msk = dt + timedelta(hours=3)
+            try:
+                dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
+                dt_msk = dt + timedelta(hours=3)
+            except Exception:
+                dt_msk = datetime.now()
             date = dt_msk.strftime("%d %B %H:%M")
 
             await context.bot.send_message(
@@ -221,7 +228,7 @@ def main():
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # JobQueue включён автоматически при builder
+    # JobQueue включён автоматически
     app.job_queue.run_repeating(notify_job, interval=300, first=300)
 
     print("Бот запущен")
