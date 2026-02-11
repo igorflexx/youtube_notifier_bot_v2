@@ -1,49 +1,50 @@
-import re
 import requests
+import re
+from datetime import datetime
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-def resolve_channel(url: str) -> str | None:
-    url = url.strip()
 
-    # @username
-    m = re.search(r"youtube\.com/@([A-Za-z0-9._-]+)", url)
-    if m:
-        return f"@{m.group(1)}"
-
-    # /channel/UCxxxx
-    m = re.search(r"youtube\.com/channel/(UC[a-zA-Z0-9_-]+)", url)
-    if m:
-        return m.group(1)
-
-    # /c/xxxx
-    m = re.search(r"youtube\.com/c/([A-Za-z0-9_-]+)", url)
-    if m:
-        return m.group(1)
-
-    return None
+def resolve_channel(url: str):
+    match = re.search(r"youtube\.com/@([\w\-]+)", url)
+    if not match:
+        return None
+    return match.group(1)
 
 
-def get_channel_info(channel: str) -> dict | None:
-    if channel.startswith("@"):
-        url = f"https://www.youtube.com/{channel}"
-    elif channel.startswith("UC"):
-        url = f"https://www.youtube.com/channel/{channel}"
-    else:
-        url = f"https://www.youtube.com/c/{channel}"
-
-    r = requests.get(url, headers=HEADERS, timeout=10)
+def get_channel_info(handle: str):
+    url = f"https://www.youtube.com/@{handle}"
+    r = requests.get(url, headers=HEADERS)
     if r.status_code != 200:
         return None
 
-    # тупо, но стабильно
-    m = re.search(r"<title>(.*?) - YouTube</title>", r.text)
-    if not m:
+    title_match = re.search(r'"title":"([^"]+)"', r.text)
+    if not title_match:
         return None
 
     return {
-        "id": channel,
-        "title": m.group(1)
+        "id": handle,
+        "title": title_match.group(1),
+    }
+
+
+def get_latest_video(handle: str):
+    url = f"https://www.youtube.com/@{handle}/videos"
+    r = requests.get(url, headers=HEADERS)
+    if r.status_code != 200:
+        return None
+
+    match = re.search(r'"videoId":"([^"]+)".+?"title":{"runs":\[{"text":"([^"]+)"}].+?"publishedTimeText":{"simpleText":"([^"]+)"}', r.text)
+    if not match:
+        return None
+
+    video_id, title, published = match.groups()
+
+    return {
+        "id": video_id,
+        "title": title,
+        "published": datetime.utcnow().isoformat(),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
     }
