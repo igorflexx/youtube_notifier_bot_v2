@@ -1,4 +1,5 @@
-requests
-feedparser
-python-telegram-bot==20.3
-apscheduler
+python-telegram-bot==20.5
+feedparser==6.0.10
+beautifulsoup4==4.12.2
+requests==2.32.0
+apscheduler==3.10.4

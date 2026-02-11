@@ -1,15 +1,16 @@
 import os
 import asyncio
 from datetime import datetime
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from db import cursor, conn, get_user_channels, remove_channel
 from youtube import resolve_channel, get_channel_info
 from scheduler import check_updates
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+# Пользовательские состояния и последние сообщения
 states = {}
 last_message = {}
 
@@ -22,6 +23,7 @@ def main_menu():
 def back_menu():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
 
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -29,6 +31,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     last_message[update.message.from_user.id] = msg.message_id
 
+# Кнопки
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -61,8 +64,8 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rows:
             await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
             return
-        import feedparser
         video_list = []
+        import feedparser
         for name, cid in rows:
             feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
             if not feed.entries: continue
@@ -73,6 +76,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
+# Сообщения
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
@@ -83,7 +87,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось определить канал")
             return
         name, last = get_channel_info(cid)
-        cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last))
+        cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last.isoformat() if last else None))
         cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
         conn.commit()
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
@@ -120,21 +124,18 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # APScheduler вместо JobQueue
+    # Scheduler уведомлений
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: check_updates(app.bot), "interval", minutes=1)
+    scheduler.add_job(lambda: check_updates(app.bot), "interval", seconds=60)
     scheduler.start()
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await app.updater.idle()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    # В PTB 20+ нужно просто await внутри asyncio
+    asyncio.run(main())

@@ -1,47 +1,43 @@
 import sqlite3
+from datetime import datetime
 
-DB_PATH = "/data/database.db"
-
+DB_PATH = "/data/database.db"  # Путь для Railway volume
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
-# Таблица каналов
+# Создание таблиц, если их нет
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS channels (
     channel_id TEXT PRIMARY KEY,
-    channel_name TEXT,
-    last_video_id TEXT,
-    last_notified_video_id TEXT
+    name TEXT,
+    last_video TEXT
 )
 """)
 
-# Таблица подписок
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS subscriptions (
     user_id INTEGER,
     channel_id TEXT,
-    UNIQUE(user_id, channel_id)
+    PRIMARY KEY(user_id, channel_id),
+    FOREIGN KEY(channel_id) REFERENCES channels(channel_id) ON DELETE CASCADE
 )
 """)
-
 conn.commit()
 
-# -----------------------------
-# Функции работы с каналами
-# -----------------------------
-
-def remove_channel(user_id, channel_id):
-    cursor.execute(
-        "DELETE FROM subscriptions WHERE user_id=? AND channel_id=?",
-        (user_id, channel_id)
-    )
-    conn.commit()
-
+# Получить список каналов пользователя
 def get_user_channels(user_id):
     cursor.execute("""
-    SELECT c.channel_name, c.channel_id
+    SELECT c.name, c.channel_id
     FROM channels c
-    JOIN subscriptions s ON c.channel_id=s.channel_id
-    WHERE s.user_id=?
+    JOIN subscriptions s ON c.channel_id = s.channel_id
+    WHERE s.user_id = ?
     """, (user_id,))
     return cursor.fetchall()
+
+# Удалить канал у пользователя (только связь)
+def remove_channel(user_id, channel_id):
+    cursor.execute("""
+    DELETE FROM subscriptions
+    WHERE user_id=? AND channel_id=?
+    """, (user_id, channel_id))
+    conn.commit()
