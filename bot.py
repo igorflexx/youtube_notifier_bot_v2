@@ -1,136 +1,174 @@
 import os
+import sqlite3
+import asyncio
 from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from db import cursor, conn, get_user_channels, remove_channel
-from youtube import resolve_channel, get_channel_info
-from scheduler import check_updates
+
+from telegram import (
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+
+from youtube import resolve_channel, get_channel_info, get_last_video
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+db = sqlite3.connect("db.sqlite3", check_same_thread=False)
+cur = db.cursor()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS channels (
+    user_id INTEGER,
+    channel_id TEXT,
+    name TEXT,
+    last_video TEXT
+)
+""")
+db.commit()
+
 states = {}
-last_message = {}
 
 def main_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
-        [InlineKeyboardButton("🎬 Последние видео", callback_data="last_video")]
+        [InlineKeyboardButton("📺 Мои каналы", callback_data="list")],
+        [InlineKeyboardButton("🆕 Последние видео", callback_data="last_video")]
     ])
 
 def back_menu():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Домой", callback_data="main_menu")]
+    ])
+
+def get_user_channels(uid):
+    cur.execute("SELECT name, channel_id, last_video FROM channels WHERE user_id=?", (uid,))
+    return cur.fetchall()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text(
-        "Скидывай ссылку на канал в чат",
+    states.pop(update.effective_user.id, None)
+    await update.message.reply_text(
+        "Скидывай ссылку на YouTube канал",
         reply_markup=main_menu()
     )
-    last_message[update.message.from_user.id] = msg.message_id
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    message_id = q.message.message_id
-    last_message[uid] = message_id
 
     if q.data == "main_menu":
-        await q.message.edit_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
         states.pop(uid, None)
-        return
+        await q.message.edit_text("Скидывай ссылку на YouTube канал", reply_markup=main_menu())
 
     elif q.data == "list":
         rows = get_user_channels(uid)
         if not rows:
-            await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
+            await q.message.edit_text("📭 Каналов нет", reply_markup=back_menu())
             return
-        text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(rows))
+        text = "📺 Твои каналы:\n\n" + "\n".join(
+            f"{i+1}. {name}" for i, (name, _, _) in enumerate(rows)
+        )
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+            [InlineKeyboardButton("❌ Удалить канал", callback_data="del")],
+            [InlineKeyboardButton("🏠 Домой", callback_data="main_menu")]
         ])
         await q.message.edit_text(text, reply_markup=kb)
 
-    elif q.data == "del_num":
-        states[uid] = "del_num"
-        await q.message.reply_text("Введи номер канала, который хочешь удалить", reply_markup=back_menu())
+    elif q.data == "del":
+        states[uid] = "del"
+        await q.message.reply_text("Введи номер канала", reply_markup=back_menu())
 
     elif q.data == "last_video":
         rows = get_user_channels(uid)
         if not rows:
-            await q.message.edit_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
+            await q.message.edit_text("📭 Каналов нет", reply_markup=back_menu())
             return
-        video_list = []
-        import feedparser
-        for name, cid in rows:
-            feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}")
-            if not feed.entries: continue
-            entry = feed.entries[0]
-            pub_time = datetime(*entry.published_parsed[:6])
-            video_list.append({"channel": name, "title": entry.title, "link": entry.link, "pub": pub_time})
-        video_list.sort(key=lambda x: x["pub"], reverse=True)
-        msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
-        await q.message.edit_text(msg_text, reply_markup=back_menu())
 
-async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
+        videos = []
+        for name, cid, _ in rows:
+            v = get_last_video(cid)
+            if not v:
+                continue
+            pub = datetime(*v.published_parsed[:6])
+            videos.append((pub, name, v.title, v.link))
+
+        videos.sort(reverse=True)
+        text = "\n\n".join(
+            f"📺 {name}\n🎬 {title}\n🗓 {pub:%d.%m %H:%M}\n🔗 {link}"
+            for pub, name, title, link in videos
+        )
+        await q.message.edit_text(text or "Видео не найдены", reply_markup=back_menu())
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     text = update.message.text.strip()
 
-    if text.startswith("https://www.youtube.com/channel/") or "/@" in text:
-        cid = resolve_channel(text)
-        if not cid:
-            await update.message.reply_text("❌ Не удалось определить канал")
-            return
-        name, last = get_channel_info(cid)
-        cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last))
-        cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
-        conn.commit()
-        await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
-
-    elif states.get(uid) == "del_num":
+    if states.get(uid) == "del":
         rows = get_user_channels(uid)
-        if not rows:
-            await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
-            states.pop(uid, None)
-            return
         try:
-            num = int(text)
-            if num < 1 or num > len(rows):
-                raise ValueError
-            cid_to_delete = rows[num - 1][1]
-            remove_channel(uid, cid_to_delete)
-            states.pop(uid, None)
-            updated_rows = get_user_channels(uid)
-            if not updated_rows:
-                await update.message.reply_text("📭 У тебя пока нет каналов", reply_markup=back_menu())
-                return
-            updated_text = "📺 Твои каналы:\n\n" + "\n".join(f"{i+1}. {name}" for i, (name, _) in enumerate(updated_rows))
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Удалить канал", callback_data="del_num")],
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-            ])
-            message_id = last_message.get(uid)
-            if message_id:
-                await context.bot.edit_message_text(chat_id=uid, message_id=message_id, text=updated_text, reply_markup=kb)
-        except ValueError:
-            await update.message.reply_text("❌ Некорректный номер", reply_markup=back_menu())
+            idx = int(text) - 1
+            name, cid, _ = rows[idx]
+            cur.execute(
+                "DELETE FROM channels WHERE user_id=? AND channel_id=?",
+                (uid, cid)
+            )
+            db.commit()
+            await update.message.reply_text(f"❌ Удалён: {name}", reply_markup=main_menu())
+        except:
+            await update.message.reply_text("Ошибка", reply_markup=main_menu())
+        states.pop(uid, None)
+        return
 
-def run_bot():
-    app = ApplicationBuilder().token(TOKEN).build()
+    try:
+        cid = resolve_channel(text)
+        info = get_channel_info(cid)
+        if not info:
+            raise ValueError
+        cur.execute(
+            "INSERT INTO channels VALUES (?,?,?,?)",
+            (uid, cid, info["title"], "")
+        )
+        db.commit()
+        await update.message.reply_text(f"✅ Добавлен: {info['title']}", reply_markup=main_menu())
+    except:
+        await update.message.reply_text("❌ Неверная ссылка", reply_markup=main_menu())
+
+async def notifier(app: Application):
+    while True:
+        cur.execute("SELECT rowid, user_id, channel_id, name, last_video FROM channels")
+        for rowid, uid, cid, name, last in cur.fetchall():
+            v = get_last_video(cid)
+            if not v:
+                continue
+            if v.id != last:
+                cur.execute(
+                    "UPDATE channels SET last_video=? WHERE rowid=?",
+                    (v.id, rowid)
+                )
+                db.commit()
+                await app.bot.send_message(
+                    uid,
+                    f"🆕 Новое видео!\n📺 {name}\n🎬 {v.title}\n🔗 {v.link}"
+                )
+        await asyncio.sleep(300)
+
+async def main():
+    app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # Scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: check_updates(app.bot), "interval", minutes=1)
-    scheduler.start()
+    asyncio.create_task(notifier(app))
 
-    # Просто запускаем run_polling — PTB сам управляет loop
-    print("Бот запущен!")
-    app.run_polling()
+    print("Бот запущен")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    run_bot()
+    asyncio.run(main())
