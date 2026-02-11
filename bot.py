@@ -1,11 +1,7 @@
 import os
-import json
-from datetime import datetime
-from telegram import (
-    Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+import asyncio
+from datetime import datetime, timezone, timedelta
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -15,12 +11,10 @@ from telegram.ext import (
     filters,
 )
 from youtube import resolve_channel, get_channel_info, get_latest_video
-
-# ---------- PATH STORAGE ----------
-STORAGE_FILE = "/data/channels.json"
+from storage import load_channels, save_channels
 
 TOKEN = os.getenv("BOT_TOKEN")
-
+DATA_FILE = "/data/channels.json"
 
 # ---------- КНОПКИ ----------
 
@@ -30,12 +24,10 @@ def home_kb():
         [InlineKeyboardButton("🆕 Последние видео", callback_data="BTN_LATEST")],
     ])
 
-
 def back_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Домой", callback_data="BTN_HOME")]
     ])
-
 
 def delete_kb():
     return InlineKeyboardMarkup([
@@ -43,36 +35,15 @@ def delete_kb():
         [InlineKeyboardButton("🏠 Домой", callback_data="BTN_HOME")],
     ])
 
-
-# ---------- STORAGE ----------
-
-def load_storage():
-    if not os.path.exists(STORAGE_FILE):
-        return {}
-    with open(STORAGE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_storage(data):
-    os.makedirs(os.path.dirname(STORAGE_FILE), exist_ok=True)
-    with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
 # ---------- /start ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    storage = load_storage()
-    chat_id = str(update.effective_chat.id)
-
-    context.user_data.setdefault("channels", storage.get(chat_id, []))
+    context.user_data.setdefault("channels", load_channels(DATA_FILE))
     context.user_data.setdefault("last_videos", {})
-
     await update.message.reply_text(
         "Скидывай ссылку на YouTube канал",
         reply_markup=home_kb()
     )
-
 
 # ---------- ДОБАВЛЕНИЕ КАНАЛА ----------
 
@@ -99,7 +70,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Канал уже добавлен")
         return
 
-    # 🔒 ФИКС: запоминаем текущее видео, чтобы НЕ слать старые
     latest = get_latest_video(channel_id)
     if latest:
         context.user_data["last_videos"][channel_id] = latest["id"]
@@ -107,18 +77,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channels.append({
         "channel_id": channel_id,
         "title": info["title"],
+        "url": info["url"]
     })
 
-    # сохраняем в storage
-    storage = load_storage()
-    storage[str(update.effective_chat.id)] = channels
-    save_storage(storage)
+    save_channels(DATA_FILE, channels)
 
     await update.message.reply_text(
         f"✅ Канал добавлен: {info['title']}",
         reply_markup=home_kb()
     )
-
 
 # ---------- КНОПКИ ----------
 
@@ -142,7 +109,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "BTN_LATEST":
         await show_latest(q, context)
 
-
 # ---------- МОИ КАНАЛЫ ----------
 
 async def show_channels(q, context):
@@ -158,7 +124,6 @@ async def show_channels(q, context):
 
     await q.message.reply_text(text, reply_markup=delete_kb())
 
-
 # ---------- УДАЛЕНИЕ ----------
 
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,26 +133,22 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         idx = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("ты долбаеб?")
+        await update.message.reply_text("ты долбаеб?", reply_markup=back_kb())
         return
 
     if idx < 1 or idx > len(channels):
-        await update.message.reply_text("ты долбаеб?")
+        await update.message.reply_text("ты долбаеб?", reply_markup=back_kb())
         return
 
     removed = channels.pop(idx - 1)
     context.user_data["last_videos"].pop(removed["channel_id"], None)
 
-    # сохраняем в storage
-    storage = load_storage()
-    storage[str(update.effective_chat.id)] = channels
-    save_storage(storage)
+    save_channels(DATA_FILE, channels)
 
     await update.message.reply_text(
         f"🗑 Канал удалён: {removed['title']}",
-        reply_markup=home_kb()
+        reply_markup=back_kb()
     )
-
 
 # ---------- ПОСЛЕДНИЕ ВИДЕО ----------
 
@@ -205,8 +166,10 @@ async def show_latest(q, context):
         if not video:
             continue
 
-        dt = datetime.fromisoformat(video["published"])
-        date = dt.strftime("%d %B %H:%M")
+        # Перевод времени публикации в МСК
+        dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
+        dt_msk = dt + timedelta(hours=3)
+        date = dt_msk.strftime("%d %B %H:%M")
 
         text += (
             f"📺 {ch['title']}\n"
@@ -217,15 +180,12 @@ async def show_latest(q, context):
 
     await q.message.reply_text(text.strip(), reply_markup=back_kb())
 
-
 # ---------- УВЕДОМЛЕНИЯ ----------
 
 async def notify_job(context: ContextTypes.DEFAULT_TYPE):
-    storage = load_storage()
-
-    for chat_id, data in storage.items():
+    for chat_id, data in context.application.user_data.items():
         channels = data.get("channels", [])
-        last_videos = context.application.user_data.setdefault(chat_id, {}).get("last_videos", {})
+        last_videos = data.get("last_videos", {})
 
         for ch in channels:
             video = get_latest_video(ch["channel_id"])
@@ -237,11 +197,12 @@ async def notify_job(context: ContextTypes.DEFAULT_TYPE):
 
             last_videos[ch["channel_id"]] = video["id"]
 
-            dt = datetime.fromisoformat(video["published"])
-            date = dt.strftime("%d %B %H:%M")
+            dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
+            dt_msk = dt + timedelta(hours=3)
+            date = dt_msk.strftime("%d %B %H:%M")
 
             await context.bot.send_message(
-                chat_id=int(chat_id),
+                chat_id=chat_id,
                 text=(
                     f"🆕 Новое видео!\n\n"
                     f"📺 {ch['title']}\n"
@@ -250,7 +211,6 @@ async def notify_job(context: ContextTypes.DEFAULT_TYPE):
                     f"{video['url']}"
                 )
             )
-
 
 # ---------- ЗАПУСК ----------
 
@@ -261,12 +221,11 @@ def main():
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # 🔹 Исправление JobQueue
+    # JobQueue включён автоматически при builder
     app.job_queue.run_repeating(notify_job, interval=300, first=300)
 
     print("Бот запущен")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()

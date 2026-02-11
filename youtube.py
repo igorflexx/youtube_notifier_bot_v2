@@ -1,6 +1,6 @@
+import feedparser
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
@@ -16,27 +16,32 @@ def get_channel_info(channel_url: str) -> dict | None:
         r = requests.get(channel_url, headers=HEADERS, timeout=10)
         if r.status_code != 200:
             return None
-
         soup = BeautifulSoup(r.text, "html.parser")
         og_title = soup.find("meta", property="og:title")
         og_url = soup.find("meta", property="og:url")
         if not og_title or not og_url:
             return None
-
         title = og_title["content"].replace(" - YouTube", "").strip()
         url = og_url["content"]
         return {"title": title, "url": url}
     except Exception:
         return None
 
-# 🔹 Пример функции для получения последнего видео
 def get_latest_video(channel_url: str) -> dict | None:
-    # Здесь можно подключить API YouTube или парсер RSS канала
-    # Возвращает словарь: {"id": video_id, "title": title, "published": iso_date, "url": video_url}
-    # Для теста можно вернуть заглушку
-    return {
-        "id": "test_id",
-        "title": "Тестовое видео",
-        "published": datetime.utcnow().isoformat(),
-        "url": f"{channel_url}/video/test_id"
-    }
+    rss_url = f"{channel_url}/videos?view=0&sort=p&flow=grid&pbj=1"
+    try:
+        # RSS через feedparser
+        feed_url = channel_url + "/videos?flow=grid&view=0&sort=p"
+        feed = feedparser.parse(feed_url)
+        if not feed.entries:
+            return None
+        entry = feed.entries[0]
+        video_id = entry.link.split("/")[-1]
+        return {
+            "id": video_id,
+            "title": entry.title,
+            "url": entry.link,
+            "published": entry.published
+        }
+    except Exception:
+        return None
