@@ -1,18 +1,22 @@
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def resolve_channel(url: str) -> str | None:
+    """Возвращает ID или ссылку канала, если ссылка корректная."""
     if "youtube.com" not in url:
         return None
-    # Полная поддержка разных форматов ссылок
-    if "/@" in url or "/channel/" in url or "/c/" in url:
+    if "/@" in url:
+        return url.rstrip("/")
+    if "/channel/" in url:
         return url.rstrip("/")
     return None
 
 def get_channel_info(channel_url: str) -> dict | None:
+    """Получает название и ссылку на канал через og:meta теги."""
     try:
         r = requests.get(channel_url, headers=HEADERS, timeout=10)
         if r.status_code != 200:
@@ -29,24 +33,38 @@ def get_channel_info(channel_url: str) -> dict | None:
         return None
 
 def get_latest_video(channel_url: str) -> dict | None:
+    """Возвращает последнее видео канала через RSS."""
     try:
-        # Получаем RSS через feedparser
+        # Поддержка каналов с /channel/ID и /@username
         if "/channel/" in channel_url:
             channel_id = channel_url.split("/channel/")[-1]
-            feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        elif "/@" in channel_url:
+            channel_id = channel_url.split("/@")[-1]
         else:
-            # Для @username или /c/ используем HTML парсинг
-            feed_url = channel_url + "/videos?flow=grid&view=0&sort=p"
-        feed = feedparser.parse(feed_url)
+            return None
+
+        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}" if "/channel/" in channel_url else None
+        if not rss_url:
+            # Для @username сначала нужно получить реальный канал
+            info = get_channel_info(channel_url)
+            if not info:
+                return None
+            rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={resolve_channel(info['url']).split('/')[-1]}"
+
+        feed = feedparser.parse(rss_url)
         if not feed.entries:
             return None
         entry = feed.entries[0]
-        video_id = entry.link.split("/")[-1]
+        # Преобразуем published в isoformat для хранения
+        try:
+            published = datetime(*entry.published_parsed[:6]).isoformat()
+        except Exception:
+            published = datetime.utcnow().isoformat()
         return {
-            "id": video_id,
+            "id": entry.link.split("/")[-1],
             "title": entry.title,
             "url": entry.link,
-            "published": entry.published
+            "published": published
         }
     except Exception:
         return None
