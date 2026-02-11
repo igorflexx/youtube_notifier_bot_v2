@@ -22,43 +22,45 @@ from youtube import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# --------- КЛАВИАТУРА ---------
+
+# ---------- КНОПКИ ----------
 
 def home_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📺 Мои каналы", callback_data="my_channels")],
-        [InlineKeyboardButton("🆕 Последние видео", callback_data="latest_videos")],
+        [InlineKeyboardButton("📺 Мои каналы", callback_data="BTN_MY_CHANNELS")],
+        [InlineKeyboardButton("🆕 Последние видео", callback_data="BTN_LATEST")],
     ])
 
 
 def back_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Домой", callback_data="home")]
+        [InlineKeyboardButton("🏠 Домой", callback_data="BTN_HOME")]
     ])
 
 
 def delete_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ Удалить канал", callback_data="delete_channel")],
-        [InlineKeyboardButton("🏠 Домой", callback_data="home")],
+        [InlineKeyboardButton("❌ Удалить канал", callback_data="BTN_DELETE")],
+        [InlineKeyboardButton("🏠 Домой", callback_data="BTN_HOME")],
     ])
 
 
-# --------- /start ---------
+# ---------- /start ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("channels", [])
+    context.user_data.setdefault("last_videos", {})
     await update.message.reply_text(
         "Скидывай ссылку на YouTube канал",
         reply_markup=home_kb()
     )
 
 
-# --------- ДОБАВЛЕНИЕ КАНАЛА ---------
+# ---------- ДОБАВЛЕНИЕ КАНАЛА ----------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("await_delete"):
-        await handle_delete_number(update, context)
+        await handle_delete(update, context)
         return
 
     url = update.message.text.strip()
@@ -73,13 +75,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Канал не найден")
         return
 
-    channels = context.user_data.setdefault("channels", [])
+    channels = context.user_data["channels"]
 
-    if any(c["id"] == info["id"] for c in channels):
+    if any(c["channel_id"] == channel_id for c in channels):
         await update.message.reply_text("⚠️ Канал уже добавлен")
         return
 
-    channels.append(info)
+    # 🔒 ФИКС: запоминаем текущее видео, чтобы НЕ слать старые
+    latest = get_latest_video(channel_id)
+    if latest:
+        context.user_data["last_videos"][channel_id] = latest["id"]
+
+    channels.append({
+        "channel_id": channel_id,
+        "title": info["title"],
+    })
 
     await update.message.reply_text(
         f"✅ Канал добавлен: {info['title']}",
@@ -87,33 +97,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --------- КНОПКИ ---------
+# ---------- КНОПКИ ----------
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    if q.data == "home":
+    if q.data == "BTN_HOME":
         await q.message.edit_text(
             "Скидывай ссылку на YouTube канал",
             reply_markup=home_kb()
         )
 
-    elif q.data == "my_channels":
+    elif q.data == "BTN_MY_CHANNELS":
         await show_channels(q, context)
 
-    elif q.data == "delete_channel":
+    elif q.data == "BTN_DELETE":
         context.user_data["await_delete"] = True
         await q.message.reply_text("Введите номер канала для удаления")
 
-    elif q.data == "latest_videos":
-        await show_latest_videos(q, context)
+    elif q.data == "BTN_LATEST":
+        await show_latest(q, context)
 
 
-# --------- МОИ КАНАЛЫ ---------
+# ---------- МОИ КАНАЛЫ ----------
 
 async def show_channels(q, context):
-    channels = context.user_data.get("channels", [])
+    channels = context.user_data["channels"]
 
     if not channels:
         await q.message.reply_text("📭 Каналов нет", reply_markup=back_kb())
@@ -126,11 +136,11 @@ async def show_channels(q, context):
     await q.message.reply_text(text, reply_markup=delete_kb())
 
 
-# --------- УДАЛЕНИЕ ПО НОМЕРУ ---------
+# ---------- УДАЛЕНИЕ ----------
 
-async def handle_delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["await_delete"] = False
-    channels = context.user_data.get("channels", [])
+    channels = context.user_data["channels"]
 
     try:
         idx = int(update.message.text.strip())
@@ -143,16 +153,18 @@ async def handle_delete_number(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     removed = channels.pop(idx - 1)
+    context.user_data["last_videos"].pop(removed["channel_id"], None)
+
     await update.message.reply_text(
         f"🗑 Канал удалён: {removed['title']}",
         reply_markup=home_kb()
     )
 
 
-# --------- ПОСЛЕДНИЕ ВИДЕО ---------
+# ---------- ПОСЛЕДНИЕ ВИДЕО ----------
 
-async def show_latest_videos(q, context):
-    channels = context.user_data.get("channels", [])
+async def show_latest(q, context):
+    channels = context.user_data["channels"]
 
     if not channels:
         await q.message.reply_text("📭 Сначала добавь канал", reply_markup=back_kb())
@@ -161,7 +173,7 @@ async def show_latest_videos(q, context):
     text = "🆕 Последние видео:\n\n"
 
     for ch in channels:
-        video = get_latest_video(ch["id"])
+        video = get_latest_video(ch["channel_id"])
         if not video:
             continue
 
@@ -178,22 +190,22 @@ async def show_latest_videos(q, context):
     await q.message.reply_text(text.strip(), reply_markup=back_kb())
 
 
-# --------- УВЕДОМЛЕНИЯ ---------
+# ---------- УВЕДОМЛЕНИЯ ----------
 
 async def notify_job(context: ContextTypes.DEFAULT_TYPE):
     for chat_id, data in context.application.user_data.items():
         channels = data.get("channels", [])
-        last_ids = data.setdefault("last_videos", {})
+        last_videos = data.get("last_videos", {})
 
         for ch in channels:
-            video = get_latest_video(ch["id"])
+            video = get_latest_video(ch["channel_id"])
             if not video:
                 continue
 
-            if last_ids.get(ch["id"]) == video["id"]:
+            if last_videos.get(ch["channel_id"]) == video["id"]:
                 continue
 
-            last_ids[ch["id"]] = video["id"]
+            last_videos[ch["channel_id"]] = video["id"]
 
             dt = datetime.fromisoformat(video["published"])
             date = dt.strftime("%d %B %H:%M")
@@ -210,20 +222,16 @@ async def notify_job(context: ContextTypes.DEFAULT_TYPE):
             )
 
 
-# --------- ЗАПУСК ---------
+# ---------- ЗАПУСК ----------
 
 def main():
-    app = (
-        Application.builder()
-        .token(TOKEN)
-        .build()
-    )
+    app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.job_queue.run_repeating(notify_job, interval=300, first=10)
+    app.job_queue.run_repeating(notify_job, interval=300, first=300)
 
     print("Бот запущен")
     app.run_polling()
