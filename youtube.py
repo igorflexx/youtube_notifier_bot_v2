@@ -7,7 +7,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 def resolve_channel(url: str) -> str | None:
     if "youtube.com" not in url:
         return None
-    if "/@" in url:
+    # Полная поддержка разных форматов ссылок
+    if "/@" in url or "/channel/" in url or "/c/" in url:
         return url.rstrip("/")
     return None
 
@@ -28,21 +29,24 @@ def get_channel_info(channel_url: str) -> dict | None:
         return None
 
 def get_latest_video(channel_url: str) -> dict | None:
-    # Берём настоящий RSS канал
-    if channel_url.startswith("https://www.youtube.com/@"):
-        username = channel_url.split("/@")[-1]
-        rss_url = f"https://www.youtube.com/feeds/videos.xml?user={username}"
-    else:
-        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_url.split('/')[-1]}"
-
-    feed = feedparser.parse(rss_url)
-    if not feed.entries:
+    try:
+        # Получаем RSS через feedparser
+        if "/channel/" in channel_url:
+            channel_id = channel_url.split("/channel/")[-1]
+            feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        else:
+            # Для @username или /c/ используем HTML парсинг
+            feed_url = channel_url + "/videos?flow=grid&view=0&sort=p"
+        feed = feedparser.parse(feed_url)
+        if not feed.entries:
+            return None
+        entry = feed.entries[0]
+        video_id = entry.link.split("/")[-1]
+        return {
+            "id": video_id,
+            "title": entry.title,
+            "url": entry.link,
+            "published": entry.published
+        }
+    except Exception:
         return None
-
-    entry = feed.entries[0]
-    return {
-        "id": entry.id,
-        "title": entry.title,
-        "url": entry.link,
-        "published": entry.published
-    }

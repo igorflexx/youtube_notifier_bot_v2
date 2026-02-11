@@ -1,16 +1,18 @@
 import os
 import json
 
-def load_channels(file_path: str) -> list:
-    if not os.path.exists(file_path):
+DATA_FILE = "/data/channels.json"
+
+def load_channels():
+    if not os.path.exists(DATA_FILE):
         return []
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
 
-def save_channels(file_path: str, channels: list):
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, "w", encoding="utf-8") as f:
+def save_channels(channels):
+    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(channels, f, ensure_ascii=False, indent=2)

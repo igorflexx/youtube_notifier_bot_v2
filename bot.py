@@ -14,10 +14,8 @@ from youtube import resolve_channel, get_channel_info, get_latest_video
 from storage import load_channels, save_channels
 
 TOKEN = os.getenv("BOT_TOKEN")
-DATA_FILE = "/data/channels.json"
 
 # ---------- КНОПКИ ----------
-
 def home_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📺 Мои каналы", callback_data="BTN_MY_CHANNELS")],
@@ -36,9 +34,8 @@ def delete_kb():
     ])
 
 # ---------- /start ----------
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.setdefault("channels", load_channels(DATA_FILE))
+    context.user_data.setdefault("channels", load_channels())
     context.user_data.setdefault("last_videos", {})
     await update.message.reply_text(
         "Скидывай ссылку на YouTube канал",
@@ -46,7 +43,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ---------- ДОБАВЛЕНИЕ КАНАЛА ----------
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("await_delete"):
         await handle_delete(update, context)
@@ -56,18 +52,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id = resolve_channel(url)
 
     if not channel_id:
-        await update.message.reply_text("❌ Не удалось определить канал")
+        await update.message.reply_text("❌ Не удалось определить канал", reply_markup=back_kb())
         return
 
     info = get_channel_info(channel_id)
     if not info:
-        await update.message.reply_text("❌ Канал не найден")
+        await update.message.reply_text("❌ Канал не найден", reply_markup=back_kb())
         return
 
     channels = context.user_data["channels"]
 
     if any(c["channel_id"] == channel_id for c in channels):
-        await update.message.reply_text("⚠️ Канал уже добавлен")
+        await update.message.reply_text("⚠️ Канал уже добавлен", reply_markup=back_kb())
         return
 
     latest = get_latest_video(channel_id)
@@ -79,8 +75,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "title": info["title"],
         "url": info["url"]
     })
-
-    save_channels(DATA_FILE, channels)
+    save_channels(channels)
 
     await update.message.reply_text(
         f"✅ Канал добавлен: {info['title']}",
@@ -88,7 +83,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ---------- КНОПКИ ----------
-
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -104,13 +98,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif q.data == "BTN_DELETE":
         context.user_data["await_delete"] = True
-        await q.message.reply_text("Введите номер канала для удаления")
+        await q.message.reply_text("Введите номер канала для удаления", reply_markup=back_kb())
 
     elif q.data == "BTN_LATEST":
         await show_latest(q, context)
 
 # ---------- МОИ КАНАЛЫ ----------
-
 async def show_channels(q, context):
     channels = context.user_data["channels"]
 
@@ -122,10 +115,10 @@ async def show_channels(q, context):
     for i, ch in enumerate(channels, 1):
         text += f"{i}. {ch['title']}\n"
 
-    await q.message.reply_text(text, reply_markup=delete_kb())
+    # Кнопка только "Домой" после просмотра каналов
+    await q.message.reply_text(text, reply_markup=back_kb())
 
 # ---------- УДАЛЕНИЕ ----------
-
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["await_delete"] = False
     channels = context.user_data["channels"]
@@ -142,17 +135,14 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     removed = channels.pop(idx - 1)
     context.user_data["last_videos"].pop(removed["channel_id"], None)
+    save_channels(channels)
 
-    save_channels(DATA_FILE, channels)
-
-    # После удаления оставляем только кнопку "Домой"
     await update.message.reply_text(
         f"🗑 Канал удалён: {removed['title']}",
         reply_markup=back_kb()
     )
 
 # ---------- ПОСЛЕДНИЕ ВИДЕО ----------
-
 async def show_latest(q, context):
     channels = context.user_data["channels"]
 
@@ -161,18 +151,14 @@ async def show_latest(q, context):
         return
 
     text = "🆕 Последние видео:\n\n"
-
     for ch in channels:
         video = get_latest_video(ch["channel_id"])
         if not video:
             continue
 
-        # Время публикации корректно берём из feed, переводим в МСК
-        try:
-            dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
-            dt_msk = dt + timedelta(hours=3)
-        except Exception:
-            dt_msk = datetime.now()
+        # Приводим время публикации к МСК
+        dt = datetime.strptime(video["published"], "%a, %d %b %Y %H:%M:%S %z")
+        dt_msk = dt.astimezone(timezone(timedelta(hours=3)))
         date = dt_msk.strftime("%d %B %H:%M")
 
         text += (
@@ -185,7 +171,6 @@ async def show_latest(q, context):
     await q.message.reply_text(text.strip(), reply_markup=back_kb())
 
 # ---------- УВЕДОМЛЕНИЯ ----------
-
 async def notify_job(context: ContextTypes.DEFAULT_TYPE):
     for chat_id, data in context.application.user_data.items():
         channels = data.get("channels", [])
@@ -201,11 +186,8 @@ async def notify_job(context: ContextTypes.DEFAULT_TYPE):
 
             last_videos[ch["channel_id"]] = video["id"]
 
-            try:
-                dt = datetime.fromisoformat(video["published"]).replace(tzinfo=timezone.utc)
-                dt_msk = dt + timedelta(hours=3)
-            except Exception:
-                dt_msk = datetime.now()
+            dt = datetime.strptime(video["published"], "%a, %d %b %Y %H:%M:%S %z")
+            dt_msk = dt.astimezone(timezone(timedelta(hours=3)))
             date = dt_msk.strftime("%d %B %H:%M")
 
             await context.bot.send_message(
@@ -220,7 +202,6 @@ async def notify_job(context: ContextTypes.DEFAULT_TYPE):
             )
 
 # ---------- ЗАПУСК ----------
-
 def main():
     app = Application.builder().token(TOKEN).build()
 
