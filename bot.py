@@ -12,16 +12,13 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
+    PicklePersistence,
 )
 
-from youtube import (
-    resolve_channel,
-    get_channel_info,
-    get_latest_video,
-)
+from youtube import resolve_channel, get_channel_info, get_latest_video
+from storage import DATA_FILE
 
 TOKEN = os.getenv("BOT_TOKEN")
-
 
 # ---------- КНОПКИ ----------
 
@@ -50,6 +47,7 @@ def delete_kb():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("channels", [])
     context.user_data.setdefault("last_videos", {})
+    context.user_data.setdefault("await_delete", False)
     await update.message.reply_text(
         "Скидывай ссылку на YouTube канал",
         reply_markup=home_kb()
@@ -81,7 +79,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Канал уже добавлен")
         return
 
-    # 🔒 ФИКС: запоминаем текущее видео, чтобы НЕ слать старые
+    # 🔒 запоминаем текущее видео, чтобы НЕ слать старые
     latest = get_latest_video(channel_id)
     if latest:
         context.user_data["last_videos"][channel_id] = latest["id"]
@@ -123,7 +121,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- МОИ КАНАЛЫ ----------
 
 async def show_channels(q, context):
-    channels = context.user_data["channels"]
+    channels = context.user_data.get("channels", [])
 
     if not channels:
         await q.message.reply_text("📭 Каналов нет", reply_markup=back_kb())
@@ -140,7 +138,7 @@ async def show_channels(q, context):
 
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["await_delete"] = False
-    channels = context.user_data["channels"]
+    channels = context.user_data.get("channels", [])
 
     try:
         idx = int(update.message.text.strip())
@@ -164,7 +162,7 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- ПОСЛЕДНИЕ ВИДЕО ----------
 
 async def show_latest(q, context):
-    channels = context.user_data["channels"]
+    channels = context.user_data.get("channels", [])
 
     if not channels:
         await q.message.reply_text("📭 Сначала добавь канал", reply_markup=back_kb())
@@ -193,7 +191,7 @@ async def show_latest(q, context):
 # ---------- УВЕДОМЛЕНИЯ ----------
 
 async def notify_job(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id, data in context.application.user_data.items():
+    for chat_id, data in context.application.persistence.user_data.items():
         channels = data.get("channels", [])
         last_videos = data.get("last_videos", {})
 
@@ -225,7 +223,9 @@ async def notify_job(context: ContextTypes.DEFAULT_TYPE):
 # ---------- ЗАПУСК ----------
 
 def main():
-    app = Application.builder().token(TOKEN).build()
+    persistence = PicklePersistence(filepath=DATA_FILE)
+
+    app = Application.builder().token(TOKEN).persistence(persistence).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
