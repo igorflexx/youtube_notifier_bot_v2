@@ -10,10 +10,11 @@ from scheduler import check_updates
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Пользовательские состояния и последние сообщения
+# Состояния пользователей и последние сообщения
 states = {}
 last_message = {}
 
+# Меню
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -23,7 +24,7 @@ def main_menu():
 def back_menu():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
 
-# /start
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -36,7 +37,8 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    last_message[uid] = q.message.message_id
+    message_id = q.message.message_id
+    last_message[uid] = message_id
 
     if q.data == "main_menu":
         await q.message.edit_text("Скидывай ссылку на канал в чат", reply_markup=main_menu())
@@ -87,7 +89,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось определить канал")
             return
         name, last = get_channel_info(cid)
-        cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last.isoformat() if last else None))
+        cursor.execute("INSERT OR IGNORE INTO channels VALUES (?, ?, ?)", (cid, name, last))
         cursor.execute("INSERT OR IGNORE INTO subscriptions VALUES (?, ?)", (uid, cid))
         conn.commit()
         await update.message.reply_text(f"✅ Канал добавлен: {name}", reply_markup=back_menu())
@@ -124,18 +126,25 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # Scheduler уведомлений
+    # Scheduler для уведомлений
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: check_updates(app.bot), "interval", seconds=60)
+    scheduler.add_job(lambda: check_updates(app.bot), "interval", minutes=1)
     scheduler.start()
 
-    await app.run_polling()
+    # Запуск polling без asyncio.run()
+    await app.initialize()
+    await app.start()
+    print("Бот запущен!")
+    try:
+        await app.updater.start_polling()  # или app.run_polling() тоже
+    finally:
+        await app.stop()
+        await app.shutdown()
 
+# Запуск
 if __name__ == "__main__":
-    # В PTB 20+ нужно просто await внутри asyncio
-    asyncio.run(main())
+    asyncio.get_event_loop().run_until_complete(main())
