@@ -1,5 +1,4 @@
 import os
-import asyncio
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,11 +9,9 @@ from scheduler import check_updates
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Состояния пользователей и последние сообщения
 states = {}
 last_message = {}
 
-# Меню
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Мои каналы", callback_data="list")],
@@ -24,7 +21,6 @@ def main_menu():
 def back_menu():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
 
-# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
         "Скидывай ссылку на канал в чат",
@@ -32,7 +28,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     last_message[update.message.from_user.id] = msg.message_id
 
-# Кнопки
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -78,7 +73,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_text = "\n\n".join([f"📺 {v['channel']}\n🎬 {v['title']}\n🗓 {v['pub'].strftime('%d %B %H:%M')}\n🔗 {v['link']}" for v in video_list])
         await q.message.edit_text(msg_text, reply_markup=back_menu())
 
-# Сообщения
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
@@ -122,29 +116,21 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ Некорректный номер", reply_markup=back_menu())
 
-# Основная функция
-async def main():
+def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
 
-    # Scheduler для уведомлений
+    # Scheduler
     scheduler = AsyncIOScheduler()
     scheduler.add_job(lambda: check_updates(app.bot), "interval", minutes=1)
     scheduler.start()
 
-    # Запуск polling без asyncio.run()
-    await app.initialize()
-    await app.start()
+    # Просто запускаем run_polling — PTB сам управляет loop
     print("Бот запущен!")
-    try:
-        await app.updater.start_polling()  # или app.run_polling() тоже
-    finally:
-        await app.stop()
-        await app.shutdown()
+    app.run_polling()
 
-# Запуск
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    run_bot()
